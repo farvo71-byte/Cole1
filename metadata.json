@@ -1,0 +1,6 @@
+{
+  "name": "Colette Super Agent HUD",
+  "description": "Interactive command & control console for the Colette v8 Super Agent. Integrated with 5-layered Agent Dev Kit (ADK) architecture, real-time threat maps, sentiment operations skill, and custom subagents.",
+  "requestFramePermissions": ["camera", "microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
