@@ -1,76 +1,162 @@
-# Deployment Instructions — Colette System (Oracle VPS)
+# J.A.R.V.I.S. v6.0 NEXUS — Instrukcja Uruchomienia Agenta na VPS Oracle Cloud
 
-Ten dokument zawiera instrukcje uruchomienia Twojego agenta (Colette System) na zdalnym serwerze (Oracle VPS).
+Ten przewodnik krok po kroku opisuje, jak wgrać, zbudować i uruchomić ten kompletny full-stackowy system **J.A.R.V.I.S. Nexus** (reagujący na żywo, z pulpitem analityki sentimentu i integracją LLM) na Twoim serwerze w **Oracle Cloud VPS (Ubuntu)**, aby działał 24/7 jako Twój osobisty agent.
 
-## 1. Przygotowanie serwera (VPS)
+Ponieważ aplikacja została zaktualizowana i dentyfikuje adres serwera dynamicznie (`window.location.hostname`), frontend automatycznie połączy się z backendem niezależnie od tego, pod jakim adresem IP lub domeną uruchomisz aplikację na Oracle VPS.
 
-Upewnij się, że na serwerze zainstalowano:
-- Python 3.9+
-- pip (menedżer pakietów Pythona)
-- git
+---
 
-## 2. Transfer plików
+## 1. Wymagania Wstępne na Serwerze Oracle VPS
 
-Sugerujemy przeniesienie plików za pomocą `git` lub `scp`. Upewnij się, że przesyłasz cały folder projektu `COLETTE_FULL_SYSTEM` (lub odpowiednią strukturę).
+Zaloguj się na swój serwer VPS przez SSH i zainstaluj wymagane pakiety:
 
 ```bash
-# Jeśli używasz git:
-git clone <twój-repozytorium-projektu>
-cd <folder-projektu>
+# Aktualizacja bazy pakietów
+sudo apt update && sudo apt upgrade -y
+
+# Instalacja Node.js (rekomendowana wersja v18+) i npm
+curl -fsSL https://deb.nodesource.com/setup_18.x | sudo -E bash -
+sudo apt-get install -y nodejs
+
+# Sprawdzenie poprawności instalacji
+node -v
+npm -v
 ```
 
-## 3. Konfiguracja środowiska
+---
 
-Zalecamy użycie wirtualnego środowiska (`venv`), aby uniknąć konfliktów zależności:
+## 2. Transfer Plików i Instalacja Zależności
+
+Prześlij pliki z tego repozytorium na swój serwer (np. za pomocą `git clone` lub narzędzia `scp`/`sftp` do folderu `/home/ubuntu/jarvis-nexus`), a następnie zainstaluj moduły:
 
 ```bash
-python3 -m venv venv
-source venv/bin/activate
+# Wejdź do katalogu projektu
+cd /home/ubuntu/jarvis-nexus
+
+# Zainstaluj zależności z package.json
+npm install
 ```
 
-Zainstaluj wymagane zależności (upewnij się, że w głównym katalogu znajduje się plik `requirements.txt`):
+---
+
+## 3. Konfiguracja Środowiska (.env)
+
+Stwórz plik środowiskowy `.env` na bazie pliku przykładowego `.env.example`, aby skonfigurować swój tajny klucz API dla czatbota i analizatora:
 
 ```bash
-pip install -r requirements.txt
+# Skopiuj przykład do pliku roboczego
+cp .env.example .env
+
+# Edytuj konfigurację środowiskową
+nano .env
 ```
-*(Jeśli pliku `requirements.txt` nie ma, konieczne będzie manualne zainstalowanie bibliotek używanych w `colette_system/plugins/`, np. `pip install fastapi uvicorn websockets httpx`)*
 
-## 4. Uruchomienie
+Wklej lub zaktualizuj następujące zmienne:
+```env
+# Twój klucz API dla backendu (serwer używa go bezpiecznie bez ujawniania klientowi)
+GEMINI_API_KEY=twoj_klucz_api_gemini_tutaj
+```
+*Zapisz plik kombinacją `Ctrl+O`, a potem wyjdź przez `Ctrl+X`.*
 
-Głównym punktem wejściowym serwera jest zazwyczaj `colette_system/plugins/main.py` lub `colette_system/plugins/server.py`.
+---
 
-Przed uruchomieniem zmień odpowiednie zmienne konfiguracyjne (IP serwera, klucze API) w plikach konfiguracyjnych w `colette_system/plugins/config.py`.
+## 4. Kompilacja i Budowa Produkcyjna
 
-Uruchomienie serwera:
+Gdy zależności są zainstalowane i plik `.env` jest gotowy, zbuduj zoptymalizowaną wersję produkcyjną aplikacji:
+
 ```bash
-python3 -m colette_system.plugins.main
-# lub
-python3 colette_system/plugins/main.py
+# Zbudowanie frontendu z Vite i kompilacja backendowego serwera (Express) do pojedynczego cjs
+npm run build
+```
+Proces ten wygeneruje zoptymalizowane statyczne pliki w katalogu `/dist` oraz spakuje backend do `/dist/server.cjs`, maksymalizując wydajność na dyskach VPS.
+
+---
+
+## 5. Uruchomienie jako Usługa Tła (Działanie 24/7)
+
+Aby zagwarantować, że aplikacja będzie działać nieprzerwanie (również po zamknięciu terminala SSH) i uruchomi się automatycznie przy ewentualnym restarcie serwera, skonfiguruj **PM2** lub **Systemd**.
+
+### Opcja A (Rekomendowana): PM2 (Bardzo prosty menedżer)
+```bash
+# Zainstaluj PM2 globalnie
+sudo npm install -p pm2 -g
+
+# Uruchom agenta pod kontrolą PM2
+pm2 start dist/server.cjs --name "jarvis-nexus"
+
+# Dodaj do autostartu systemowego
+pm2 save
+pm2 startup
 ```
 
-## 5. Uruchomienie jako usługa (Systemd)
+### Opcja B: Systemd (Wbudowana usługa systemowa)
+Utwórz plik konfiguracji usługi:
+```bash
+sudo nano /etc/systemd/system/jarvis-nexus.service
+```
 
-Aby agent działał w tle po rozłączeniu sesji SSH, stwórz plik usługi `systemd`:
-`/etc/systemd/system/colette-agent.service`
-
+Wklej poniższą konfigurację (upewnij się, że ścieżki odpowiadają Twojej lokalizacji):
 ```ini
 [Unit]
-Description=Colette Agent System
+Description=JARVIS Nexus System Agent
 After=network.target
 
 [Service]
+Type=simple
 User=ubuntu
-WorkingDirectory=/home/ubuntu/<sciezka-do-projektu>
-ExecStart=/home/ubuntu/<sciezka-do-projektu>/venv/bin/python3 -m colette_system.plugins.main
+WorkingDirectory=/home/ubuntu/jarvis-nexus
+ExecStart=/usr/bin/node dist/server.cjs
 Restart=always
+Environment=NODE_ENV=production
 
 [Install]
 WantedBy=multi-user.target
 ```
 
-Następnie aktywuj:
+Zapisz plik i uruchom usługę:
 ```bash
 sudo systemctl daemon-reload
-sudo systemctl enable colette-agent
-sudo systemctl start colette-agent
+sudo systemctl enable jail-nexus
+sudo systemctl start jarvis-nexus
+
+# Sprawdzenie statusu
+sudo systemctl status jarvis-nexus
 ```
+
+---
+
+## 6. Odblokowanie Portu w Oracle Cloud (Bardzo Ważne)
+
+Domyślnie serwer uruchamia się na porcie `3000`. Aby ruch sieciowy z zewnątrz mógł dotrzeć do Twojej aplikacji, musisz go odblokować na dwa sposoby:
+
+### Krok A: Oracle Cloud Infrastructure (OCI Console)
+1. Przejdź do panelu administracyjnego przedziału Oracle Cloud.
+2. Wejdź w ustawienia swojej virtualnej sieci chmurowej (**Virtual Cloud Network (VCN)**) -> **Security Lists**.
+3. Dodaj nową regułę wejściową (**Ingress Rule**):
+   * **Source CIDR**: `0.0.0.0/0`
+   * **IP Protocol**: `TCP`
+   * **Destination Port Range**: `3000`
+   * **Description**: `JARVIS Port`
+
+### Krok B: Usunięcie blokady lokalnego zapory (IPtables) na VPS
+Domyślne systemy Ubuntu w Oracle posiadają restrykcyjne reguły iptables. Wpisz w terminalu SSH poniższe komendy, aby przepuścić ruch:
+
+```bash
+# Przepuszczenie ruchu na port 3000
+sudo iptables -I INPUT 6 -p tcp --dport 3000 -j ACCEPT
+
+# Zapisanie reguł na stałe (żeby przetrwały restart)
+sudo apt-get install iptables-persistent -y
+sudo netfilter-persistent save
+```
+
+---
+
+## 7. Weryfikacja i Uruchomienie w Przeglądarce
+
+Aplikacja jest gotowa! Możesz teraz wejść na adres swojego serwera Oracle VPS:
+```
+http://<IP_TWOJEGO_SERWERA_ORACLE>:3000/
+```
+
+Wszystkie zapytania, analityka sentimentu oraz integracje z LLM będą teraz w pełni kontrolowane przez Twojego osobistego agenta działającego na Twoim własnym serwerze Oracle.

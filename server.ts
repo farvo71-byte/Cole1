@@ -59,6 +59,7 @@ async function generateContentWithRetryAndFallback(
 
         if (response && response.text) {
           console.log(`[Gemini SDK] Successfully generated content using model: ${currentModel}`);
+          (response as any).usedModel = currentModel;
           return response;
         } else {
           throw new Error("Empty response received from Gemini.");
@@ -276,6 +277,68 @@ const PRESET_DATASETS: Record<string, any> = {
   }
 };
 
+// API Endpoint for Live Data Ingestion
+app.post("/api/live-reviews", async (req, res) => {
+  const { sources, queries } = req.body;
+  const newReviews: any[] = [];
+
+  // Parallel fetching from configured live sources
+  const fetchPromises = Object.entries(sources).map(async ([platform, config]: [string, any]) => {
+    if (!config.enabled || !config.apiKey) return;
+
+    try {
+      if (platform === "twitter") {
+        const query = encodeURIComponent(queries.twitter || "product review");
+        const r = await fetch(`https://api.twitter.com/2/tweets/search/recent?query=${query}`, {
+          headers: { Authorization: `Bearer ${config.apiKey}` }
+        });
+        if (r.ok) {
+          const d = await r.json();
+          d.data?.forEach((tweet: any) => {
+            newReviews.push({ id: `tw-${tweet.id}`, text: tweet.text, source: "twitter", ts: new Date().toISOString() });
+          });
+        } else {
+          console.warn("Twitter API error:", await r.text());
+        }
+      } else if (platform === "yelp") {
+        const businessId = encodeURIComponent(queries.yelp || "some-business-id");
+        const r = await fetch(`https://api.yelp.com/v3/businesses/${businessId}/reviews`, {
+          headers: { Authorization: `Bearer ${config.apiKey}` }
+        });
+        if (r.ok) {
+          const d = await r.json();
+          d.reviews?.forEach((rev: any) => {
+            newReviews.push({ id: `ye-${rev.id}`, text: rev.text, source: "yelp", rating: rev.rating, ts: new Date().toISOString() });
+          });
+        } else {
+          console.warn("Yelp API error:", await r.text());
+        }
+      } else if (platform === "google") {
+        const placeId = encodeURIComponent(queries.google || "some-place-id");
+        const r = await fetch(`https://maps.googleapis.com/maps/api/place/details/json?place_id=${placeId}&fields=reviews&key=${config.apiKey}`);
+        if (r.ok) {
+          const d = await r.json();
+          d.result?.reviews?.forEach((rev: any) => {
+            newReviews.push({ id: `go-${rev.time}`, text: rev.text, source: "google", rating: rev.rating, ts: new Date(rev.time * 1000).toISOString() });
+          });
+        } else {
+          console.warn("Google API error:", await r.text());
+        }
+      }
+    } catch (e: any) {
+      console.error(`Error fetching from ${platform}:`, e.message);
+    }
+  });
+
+  await Promise.all(fetchPromises);
+
+  res.json({
+    success: true,
+    count: newReviews.length,
+    reviews: newReviews
+  });
+});
+
 // API Endpoint for processing batches
 app.post("/api/analyze", async (req, res) => {
   const { reviews, presetKey } = req.body;
@@ -420,6 +483,7 @@ app.post("/api/analyze", async (req, res) => {
       success: true,
       data: parsedData,
       isPreset: false,
+      usedModel: (response as any).usedModel || "gemini-3.5-flash",
     });
   } catch (error: any) {
     console.error("Gemini processing error. Triggering resilient smart fallback:", error);
@@ -454,7 +518,8 @@ app.post("/api/chat", async (req, res) => {
   }
 
   const query = message.trim();
-  const apiKey = process.env.GEMINI_API_KEY;
+  const clientApiKey = req.body.apiKey;
+  const apiKey = (clientApiKey && clientApiKey.trim() !== "" && clientApiKey !== "MY_GEMINI_API_KEY") ? clientApiKey.trim() : process.env.GEMINI_API_KEY;
 
   if (!apiKey || apiKey === "MY_GEMINI_API_KEY" || apiKey.trim() === "") {
     // Return high-value custom mock conversational answers instantly
@@ -467,7 +532,14 @@ app.post("/api/chat", async (req, res) => {
   }
 
   try {
-    const ai = getGeminiClient();
+    const ai = new GoogleGenAI({
+      apiKey,
+      httpOptions: {
+        headers: {
+          "User-Agent": "aistudio-build",
+        },
+      },
+    });
 
     const systemInstruction = 
       "You are COLETTE v8 - J.A.R.V.I.S. ULTRA, the ultimate French cybernetic super-agent assistant designed using the Agent Development Kit (ADK) 5-layered architecture (CLAUDE.md, Skills, Hooks, Subagents, Plugins).\n\n" +
@@ -514,6 +586,7 @@ app.post("/api/chat", async (req, res) => {
       success: true,
       reply,
       isSimulated: false,
+      usedModel: (response as any).usedModel || "gemini-3.5-flash",
     });
   } catch (error: any) {
     console.error("Gemini Chat processing error. Fallback triggered:", error);
