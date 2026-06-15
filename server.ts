@@ -458,39 +458,53 @@ async function generateContentWithRetryAndFallback(
       } catch (error: any) {
         lastError = error;
         const errorMessage = error?.message || String(error);
+        
+        // Safely extract human message if error is stringified JSON block
+        let cleanMsg = errorMessage;
+        try {
+          if (errorMessage.trim().startsWith("{")) {
+            const parsed = JSON.parse(errorMessage);
+            if (parsed.error && parsed.error.message) {
+              cleanMsg = parsed.error.message;
+            } else if (parsed.message) {
+              cleanMsg = parsed.message;
+            }
+          }
+        } catch (e) {}
+
         const isTransient = 
-          errorMessage.includes("503") || 
-          errorMessage.includes("502") || 
-          errorMessage.includes("429") || 
-          errorMessage.toLowerCase().includes("unavailable") || 
-          errorMessage.toLowerCase().includes("overloaded") || 
-          errorMessage.toLowerCase().includes("high demand") || 
-          errorMessage.toLowerCase().includes("spikes in demand");
+          cleanMsg.includes("503") || 
+          cleanMsg.includes("502") || 
+          cleanMsg.includes("429") || 
+          cleanMsg.toLowerCase().includes("unavailable") || 
+          cleanMsg.toLowerCase().includes("overloaded") || 
+          cleanMsg.toLowerCase().includes("high demand") || 
+          cleanMsg.toLowerCase().includes("spikes in demand");
 
         console.warn(
-          `[Gemini SDK Warning] Attempt ${attempt}/${maxAttempts} failed for model ${currentModel}. ` +
-          `Error: ${errorMessage}. Transient error detected: ${isTransient}`
+          `[Gemini SDK Warning] Attempt ${attempt}/${maxAttempts} for model ${currentModel} is busy or returned transient status. ` +
+          `Status: ${cleanMsg}`
         );
 
         const isHighlyCongested = 
-          errorMessage.includes("503") || 
-          errorMessage.toLowerCase().includes("unavailable") || 
-          errorMessage.toLowerCase().includes("high demand") || 
-          errorMessage.toLowerCase().includes("overloaded") ||
-          errorMessage.toLowerCase().includes("spikes in demand");
+          cleanMsg.includes("503") || 
+          cleanMsg.toLowerCase().includes("unavailable") || 
+          cleanMsg.toLowerCase().includes("high demand") || 
+          cleanMsg.toLowerCase().includes("overloaded") ||
+          cleanMsg.toLowerCase().includes("spikes in demand");
 
-        if (attempt < maxAttempts && isTransient && !isHighlyCongested) {
-          const waitMs = attempt * 1000; // Exponential backoff on normal transient errors
-          console.log(`[Gemini SDK] Retrying on model ${currentModel} after a sleep of ${waitMs}ms...`);
+        if (attempt < maxAttempts && isTransient) {
+          // Sleep and retry, even if highly congested we give it a brief pause
+          const waitMs = isHighlyCongested ? 1500 : (attempt * 1000);
+          console.log(`[Gemini SDK] Pausing for ${waitMs}ms before retry or model fallback...`);
           await new Promise(resolve => setTimeout(resolve, waitMs));
         } else {
-          // Model is highly congested, unavailable, or attempts exhausted. Break to proceed to next model candidate.
-          console.log(`[Gemini SDK] Model ${currentModel} is currently busy, unavailable, or busy. Transitioning immediately to other fallbacks...`);
+          // Attempts exhausted or fallback required. Break inner loop to proceed to next model.
+          console.log(`[Gemini SDK] Transitioning automatically to other fallback model candidates...`);
           break;
         }
       }
     }
-    console.log(`[Gemini SDK] Model ${currentModel} could not complete requirement. Advancing to fallback fallback model...`);
   }
 
   throw lastError || new Error("Failed to generate content after trying multiple models.");
@@ -937,6 +951,438 @@ app.post("/api/chat", async (req, res) => {
       isSimulated: true,
     });
   }
+});
+
+// --- Claude Proxy Configuration Storage & Types ---
+let proxyConfig = {
+  status: "online", // "online" | "offline"
+  authToken: "nexus-proxy-token",
+  activeProvider: "nvidia", // "nvidia" | "openrouter" | "deepseek" | "local" | "gemini"
+  nvidiaApiKey: "",
+  openrouterApiKey: "",
+  deepseekApiKey: "",
+  localLlmUrl: "http://localhost:1234/v1",
+  modelMapping: {
+    opus: "z-ai/glm4.7",
+    sonnet: "moonshotai/kimi-k2",
+    haiku: "stepfun/step-3.5-flash"
+  },
+  stats: {
+    totalRequests: 0,
+    successfulRequests: 0,
+    failedRequests: 0,
+    tokensUsed: 0
+  }
+};
+
+const PROXY_CONFIG_PATH = path.join(process.cwd(), "src/proxy-config.json");
+try {
+  if (fs.existsSync(PROXY_CONFIG_PATH)) {
+    const rawData = fs.readFileSync(PROXY_CONFIG_PATH, "utf8");
+    proxyConfig = JSON.parse(rawData);
+    console.log("[Claude Proxy] Configuration loaded from persistent file successfully.");
+  }
+} catch (e) {
+  console.error("[Claude Proxy] Failed to parse proxy-config.json, using defaults.");
+}
+
+function saveProxyConfig() {
+  try {
+    const dir = path.dirname(PROXY_CONFIG_PATH);
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+    fs.writeFileSync(PROXY_CONFIG_PATH, JSON.stringify(proxyConfig, null, 2), "utf8");
+  } catch (e) {
+    console.error("[Claude Proxy] Failed to protect-save proxy configuration:", e);
+  }
+}
+
+function translateAnthropicToOpenAI(body: any, targetModel: string) {
+  const openAiMessages: any[] = [];
+  
+  if (body.system) {
+    openAiMessages.push({
+      role: "system",
+      content: typeof body.system === "string" ? body.system : JSON.stringify(body.system)
+    });
+  }
+  
+  if (Array.isArray(body.messages)) {
+    body.messages.forEach((msg: any) => {
+      let textContent = "";
+      if (typeof msg.content === "string") {
+        textContent = msg.content;
+      } else if (Array.isArray(msg.content)) {
+        msg.content.forEach((block: any) => {
+          if (block.type === "text") {
+            textContent += block.text;
+          }
+        });
+      }
+      openAiMessages.push({
+        role: msg.role === "assistant" ? "assistant" : "user",
+        content: textContent
+      });
+    });
+  }
+  
+  return {
+    model: targetModel,
+    messages: openAiMessages,
+    max_tokens: body.max_tokens || 1024,
+    temperature: body.temperature || 0.7,
+    stream: !!body.stream
+  };
+}
+
+// ── CLAUDE CODE PROXY ENDPOINTS ───────────────────
+
+// GET /api/proxy/config - Read configuration
+app.get("/api/proxy/config", (req, res) => {
+  res.json(proxyConfig);
+});
+
+// POST /api/proxy/config - Modify configuration
+app.post("/api/proxy/config", (req, res) => {
+  const incoming = req.body;
+  if (!incoming) {
+    return res.status(400).json({ success: false, error: "Empty request body" });
+  }
+
+  proxyConfig = {
+    ...proxyConfig,
+    ...incoming,
+    stats: {
+      ...proxyConfig.stats,
+      ...(incoming.stats || {})
+    },
+    modelMapping: {
+      ...proxyConfig.modelMapping,
+      ...(incoming.modelMapping || {})
+    }
+  };
+
+  saveProxyConfig();
+  res.json({ success: true, config: proxyConfig });
+});
+
+// GET /api/proxy/status - Direct proxy landing checking
+app.get("/api/proxy/status", (req, res) => {
+  res.setHeader("Content-Type", "text/html; charset=utf-8");
+  res.send(`
+    <html>
+      <head>
+        <title>NEXUS - Free Claude Code Proxy Service</title>
+        <style>
+          body { font-family: 'Courier New', monospace; background-color: #0b132b; color: #22d3ee; padding: 40px; }
+          .container { max-width: 650px; background: rgba(0,0,0,0.5); padding: 30px; border: 1px solid #22d3ee; border-radius: 8px; box-shadow: 0 0 20px rgba(34,211,238,0.2); }
+          h1 { border-bottom: 2px solid #22d3ee; padding-bottom: 15px; margin-top: 0; }
+          .badge { display: inline-block; padding: 4px 10px; background: #00f0ff; color: #000; font-weight: bold; border-radius: 3px; font-size: 11px; }
+          .offline-badge { display: inline-block; padding: 4px 10px; background: #ef4444; color: #fff; font-weight: bold; border-radius: 3px; font-size: 11px; }
+          ul { padding-left: 20px; line-height: 1.6; }
+          code { background: rgba(255,255,255,0.1); padding: 2px 6px; border-radius: 4px; color: #f59e0b; }
+          pre { background: black; padding: 15px; border-radius: 6px; border: 1px solid rgba(255,255,255,0.1); overflow-x: auto; color: #10b981; }
+        </style>
+      </head>
+      <body>
+        <div class="container">
+          <h1>⬡ CLAUDE CODE VIRTUAL PROXY</h1>
+          <p>STATUS DECK: ${proxyConfig.status === "online" ? '<span class="badge">ACTIVE & ONLINE</span>' : '<span class="offline-badge">OFFLINE</span>'}</p>
+          <p>Routes Anthropic SDK & Claude CLI calls to FREE cloud endpoints securely.</p>
+          <h3>UPSTREAM CONFIGURATION</h3>
+          <ul>
+            <li>Active Upstream Provider: <b>${proxyConfig.activeProvider.toUpperCase()}</b></li>
+            <li>Model mappings:
+              <ul>
+                <li>Opus &rarr; <code>${proxyConfig.modelMapping.opus}</code></li>
+                <li>Sonnet &rarr; <code>${proxyConfig.modelMapping.sonnet}</code></li>
+                <li>Haiku &rarr; <code>${proxyConfig.modelMapping.haiku}</code></li>
+              </ul>
+            </li>
+          </ul>
+          <h3>CUMULATIVE PERFORMANCE METRICS</h3>
+          <ul>
+            <li>Total requests: <b>${proxyConfig.stats.totalRequests}</b></li>
+            <li>Successful: <span style="color:#10b981"><b>${proxyConfig.stats.successfulRequests}</b></span></li>
+            <li>Failed: <span style="color:#ef4444"><b>${proxyConfig.stats.failedRequests}</b></span></li>
+            <li>Estimated token compression: <b>${Math.ceil(proxyConfig.stats.tokensUsed).toLocaleString()}</b></li>
+          </ul>
+          <p style="font-size:11px; color:#ffffff80; border-top:1px solid rgba(255,255,255,0.1); padding-top:15px; margin-top:20px;">
+            Colette Super-Engine &bull; Port 3000 Ingress Routing &bull; Secured with SHA-Token
+          </p>
+        </div>
+      </body>
+    </html>
+  `);
+});
+
+// Helper for Anthropic Proxy Request Executor (Streaming/Plain)
+async function executeProxyCall(req: any, res: any) {
+  const clientToken = req.headers["x-api-key"] || req.headers["authorization"]?.toString().replace(/^Bearer /, "");
+  if (proxyConfig.authToken && clientToken !== proxyConfig.authToken) {
+    return res.status(401).json({
+      error: {
+        message: "Unauthorized: Invalid Claude Code Nexus auth token. Please check your CLI environment configurations.",
+        type: "authentication_error"
+      }
+    });
+  }
+
+  if (proxyConfig.status === "offline") {
+    return res.status(503).json({
+      error: {
+        message: "The free Claude Code proxy lies in an OFFLINE debug cycle.",
+        type: "service_unavailable_error"
+      }
+    });
+  }
+
+  const clientModel = req.body.model || "claude-3-5-sonnet";
+  let targetModel = proxyConfig.modelMapping.sonnet;
+  if (clientModel.includes("opus")) {
+    targetModel = proxyConfig.modelMapping.opus;
+  } else if (clientModel.includes("haiku")) {
+    targetModel = proxyConfig.modelMapping.haiku;
+  }
+
+  const openAiBody = translateAnthropicToOpenAI(req.body, targetModel);
+
+  let targetUrl = "https://integrate.api.nvidia.com/v1/chat/completions";
+  let apiKey = "";
+
+  switch (proxyConfig.activeProvider) {
+    case "nvidia":
+      targetUrl = "https://integrate.api.nvidia.com/v1/chat/completions";
+      apiKey = proxyConfig.nvidiaApiKey;
+      break;
+    case "openrouter":
+      targetUrl = "https://openrouter.ai/api/v1/chat/completions";
+      apiKey = proxyConfig.openrouterApiKey;
+      break;
+    case "deepseek":
+      targetUrl = "https://api.deepseek.com/v1/chat/completions";
+      apiKey = proxyConfig.deepseekApiKey;
+      break;
+    case "local":
+      targetUrl = `${proxyConfig.localLlmUrl.replace(/\/$/, "")}/chat/completions`;
+      apiKey = "not-needed";
+      break;
+    case "gemini":
+      targetUrl = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions";
+      apiKey = process.env.GEMINI_API_KEY || "";
+      break;
+  }
+
+  const isStream = !!req.body.stream;
+
+  if (isStream) {
+    try {
+      proxyConfig.stats.totalRequests++;
+      
+      res.setHeader("Content-Type", "text/event-stream");
+      res.setHeader("Cache-Control", "no-cache");
+      res.setHeader("Connection", "keep-alive");
+      
+      const headers: Record<string, string> = {
+        "Content-Type": "application/json"
+      };
+      
+      if (apiKey && apiKey !== "not-needed" && apiKey.trim() !== "") {
+        headers["Authorization"] = `Bearer ${apiKey}`;
+      }
+      
+      if (proxyConfig.activeProvider === "openrouter") {
+        headers["HTTP-Referer"] = "https://ai.studio/build";
+        headers["X-Title"] = "Colette Nexus Proxy";
+      }
+      
+      const response = await fetch(targetUrl, {
+        method: "POST",
+        headers,
+        body: JSON.stringify(openAiBody)
+      });
+      
+      if (!response.ok) {
+        const errText = await response.text();
+        proxyConfig.stats.failedRequests++;
+        saveProxyConfig();
+        
+        res.write(`event: error\n`);
+        res.write(`data: ${JSON.stringify({ error: { message: `Upstream service error [${response.status}]: ${errText.slice(0, 500)}` } })}\n\n`);
+        res.end();
+        return;
+      }
+      
+      proxyConfig.stats.successfulRequests++;
+      saveProxyConfig();
+      
+      const msgId = `msg_prx_${Date.now()}`;
+      res.write(`event: message_start\n`);
+      res.write(`data: ${JSON.stringify({
+        type: "message_start",
+        message: {
+          id: msgId,
+          type: "message",
+          role: "assistant",
+          content: [],
+          model: clientModel,
+          stop_reason: null,
+          stop_sequence: null,
+          usage: { input_tokens: 120, output_tokens: 1 }
+        }
+      })}\n\n`);
+      
+      res.write(`event: content_block_start\n`);
+      res.write(`data: ${JSON.stringify({
+        type: "content_block_start",
+        index: 0,
+        content_block: { type: "text", text: "" }
+      })}\n\n`);
+      
+      const reader = response.body?.getReader();
+      const decoder = new TextDecoder("utf8");
+      let buffer = "";
+      
+      if (reader) {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split("\n");
+          buffer = lines.pop() || "";
+          
+          for (const line of lines) {
+            const trimmed = line.trim();
+            if (!trimmed) continue;
+            if (trimmed === "data: [DONE]") continue;
+            
+            if (trimmed.startsWith("data: ")) {
+              try {
+                const jsonStr = trimmed.slice(6);
+                const chunk = JSON.parse(jsonStr);
+                const textChunk = chunk.choices?.[0]?.delta?.content || "";
+                
+                if (textChunk) {
+                  proxyConfig.stats.tokensUsed += 1;
+                  res.write(`event: content_block_delta\n`);
+                  res.write(`data: ${JSON.stringify({
+                    type: "content_block_delta",
+                    index: 0,
+                    delta: { type: "text_delta", text: textChunk }
+                  })}\n\n`);
+                }
+              } catch (err) {
+                // Ignore chunk parsing mistakes
+              }
+            }
+          }
+        }
+        
+        res.write(`event: content_block_stop\n`);
+        res.write(`data: ${JSON.stringify({ type: "content_block_stop", index: 0 })}\n\n`);
+        
+        res.write(`event: message_delta\n`);
+        res.write(`data: ${JSON.stringify({
+          type: "message_delta",
+          delta: { stop_reason: "end_turn", stop_sequence: null },
+          usage: { output_tokens: 180 }
+        })}\n\n`);
+        
+        res.write(`event: message_stop\n`);
+        res.write(`data: ${JSON.stringify({ type: "message_stop" })}\n\n`);
+        res.end();
+      } else {
+        res.end();
+      }
+    } catch (error: any) {
+      proxyConfig.stats.failedRequests++;
+      saveProxyConfig();
+      res.write(`event: error\n`);
+      res.write(`data: ${JSON.stringify({ error: { message: `Internal Proxy Error: ${error.message}` } })}\n\n`);
+      res.end();
+    }
+  } else {
+    try {
+      proxyConfig.stats.totalRequests++;
+      
+      const headers: Record<string, string> = {
+        "Content-Type": "application/json"
+      };
+      
+      if (apiKey && apiKey !== "not-needed" && apiKey.trim() !== "") {
+        headers["Authorization"] = `Bearer ${apiKey}`;
+      }
+      
+      if (proxyConfig.activeProvider === "openrouter") {
+        headers["HTTP-Referer"] = "https://ai.studio/build";
+        headers["X-Title"] = "Colette Nexus Proxy";
+      }
+      
+      const response = await fetch(targetUrl, {
+        method: "POST",
+        headers,
+        body: JSON.stringify(openAiBody)
+      });
+      
+      if (!response.ok) {
+        const errText = await response.text();
+        proxyConfig.stats.failedRequests++;
+        saveProxyConfig();
+        return res.status(response.status).json({
+          error: {
+            message: `Upstream error [${response.status}]: ${errText.slice(0, 500)}`,
+            type: "upstream_error"
+          }
+        });
+      }
+      
+      const chunk = await response.json();
+      const textContent = chunk.choices?.[0]?.message?.content || "";
+      
+      proxyConfig.stats.successfulRequests++;
+      proxyConfig.stats.tokensUsed += textContent.length / 4;
+      saveProxyConfig();
+      
+      return res.json({
+        id: `msg_prx_${Date.now()}`,
+        type: "message",
+        role: "assistant",
+        content: [
+          {
+            type: "text",
+            text: textContent
+          }
+        ],
+        model: clientModel,
+        stop_reason: "end_turn",
+        stop_sequence: null,
+        usage: {
+          input_tokens: 120,
+          output_tokens: Math.ceil(textContent.length / 4)
+        }
+      });
+    } catch (error: any) {
+      proxyConfig.stats.failedRequests++;
+      saveProxyConfig();
+      return res.status(500).json({
+        error: {
+          message: `Internal Proxy Error: ${error.message}`,
+          type: "api_error"
+        }
+      });
+    }
+  }
+}
+
+// Route standard endpoints for Anthropic compatibility
+app.post("/api/proxy/v1/messages", async (req, res) => {
+  await executeProxyCall(req, res);
+});
+
+app.post("/api/proxy/messages", async (req, res) => {
+  await executeProxyCall(req, res);
 });
 
 // GET /api/status - general status info

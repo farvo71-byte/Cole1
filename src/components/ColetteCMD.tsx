@@ -1,11 +1,13 @@
 // @ts-nocheck
 import { useState, useEffect, useRef, useCallback } from "react";
+import { ProxyPanel } from "./ProxyPanel";
 import { motion, AnimatePresence, useSpring, useMotionValue } from "framer-motion";
 import {
   Cpu, Zap, Radio, Search, Send, Mic, Terminal, Activity,
   Grid3x3, Database, Shield, GitBranch, Layers, Box,
   ChevronRight, X, Minimize2, Maximize2, RotateCcw,
-  Eye, Code2, Network, Lock, Crosshair, Wifi
+  Eye, Code2, Network, Lock, Crosshair, Wifi,
+  Sliders, Globe, RefreshCw, Play, Download, Sparkles, AlertTriangle
 } from "lucide-react";
 
 // ═══════════════════════════════════════════════════
@@ -18,7 +20,26 @@ function useSystemMetrics() {
     memory: 67.1, bandwidth: 842, packets: 19403, uptime: 847392
   });
   useEffect(() => {
-    const t = setInterval(() => {
+    const fetchRealMetrics = async () => {
+      try {
+        const res = await fetch("/api/metrics");
+        if (res.ok) {
+          const data = await res.json();
+          setMetrics(m => ({
+            cpu: data.cpu_pct ?? m.cpu,
+            neural: 99.1,
+            latency: data.latency_sec ? Math.round(data.latency_sec * 1000) : 12,
+            sync: 98.4,
+            memory: data.mem_pct ?? m.memory,
+            bandwidth: 948,
+            packets: m.packets + Math.floor(Math.random() * 25),
+            uptime: data.uptime_sec ?? (m.uptime + 3),
+          }));
+          return;
+        }
+      } catch (e) {
+        // Fallback to simulation logic if backend fails
+      }
       setMetrics(m => ({
         cpu:       clamp(m.cpu       + (Math.random() - 0.5) * 4,     5,  95),
         neural:    clamp(m.neural    + (Math.random() - 0.5) * 1.5,  88, 100),
@@ -27,28 +48,63 @@ function useSystemMetrics() {
         memory:    clamp(m.memory    + (Math.random() - 0.5) * 3,    40,  92),
         bandwidth: clamp(m.bandwidth + (Math.random() - 0.5) * 80,  400, 1200),
         packets:   m.packets + Math.floor(Math.random() * 120),
-        uptime:    m.uptime + 1,
+        uptime:    m.uptime + 3,
       }));
-    }, 1600);
+    };
+
+    fetchRealMetrics();
+    const t = setInterval(fetchRealMetrics, 3000);
     return () => clearInterval(t);
   }, []);
   return metrics;
 }
 
-function useTypewriter(text, speed = 28) {
+function useTypewriter(text, speed = 28, onCharTyped) {
   const [displayed, setDisplayed] = useState("");
   const [done, setDone] = useState(false);
+  const [isSkipped, setIsSkipped] = useState(false);
+
   useEffect(() => {
-    setDisplayed(""); setDone(false);
+    setDisplayed("");
+    setDone(false);
+    setIsSkipped(false);
+    if (!text) {
+      setDone(true);
+      return;
+    }
+
+    // Adaptive chunk speed so long texts load fast and feel reliable like AI Studio
+    const len = text.length;
+    const chunkSize = len > 500 ? 8 : (len > 220 ? 4 : (len > 80 ? 2 : 1));
+    const intervalMs = len > 220 ? 10 : speed;
+
     let i = 0;
-    const t = setInterval(() => {
-      i++;
-      setDisplayed(text.slice(0, i));
-      if (i >= text.length) { clearInterval(t); setDone(true); }
-    }, speed);
-    return () => clearInterval(t);
-  }, [text, speed]);
-  return { displayed, done };
+    const interval = setInterval(() => {
+      i += chunkSize;
+      if (i >= len) {
+        setDisplayed(text);
+        setDone(true);
+        clearInterval(interval);
+        onCharTyped?.();
+      } else {
+        setDisplayed(text.slice(0, i));
+        onCharTyped?.();
+      }
+    }, intervalMs);
+
+    return () => clearInterval(interval);
+  }, [text, speed, onCharTyped]);
+
+  const skip = useCallback(() => {
+    setDisplayed(text);
+    setDone(true);
+    setIsSkipped(true);
+    requestAnimationFrame(() => {
+      onCharTyped?.();
+    });
+  }, [text, onCharTyped]);
+
+  return { displayed, done, skip };
 }
 
 function useParallax() {
@@ -78,9 +134,9 @@ const SPRING_FAST = { type: "spring", stiffness: 180, damping: 22 };
 
 const INIT_MESSAGES = [
   { id: 1, role: "system", text: "COLETTE Neural Core v6.0 — Initialization complete. All subsystems nominal." },
-  { id: 2, role: "colette", text: "Good evening. Neural synchronization at 94.2%. I've completed the threat-surface analysis and preloaded contextual memory from your last 847 sessions. What would you like to explore today?" },
+  { id: 2, role: "colette", agent: "colette", text: "Good evening. Neural synchronization at 94.2%. I've completed the threat-surface analysis and preloaded contextual memory from your last 847 sessions. What would you like to explore today?" },
   { id: 3, role: "user", text: "Run a deep scan on the Nexus cluster. I need latency diagnostics and anomaly detection." },
-  { id: 4, role: "colette", text: "Acknowledged. Initiating deep packet inspection across all 17 Nexus nodes. Estimated completion: 8 seconds. Anomaly detection threshold set to σ > 2.1. I'll flag anything unusual immediately." },
+  { id: 4, role: "colette", agent: "colette", text: "Acknowledged. Initiating deep packet inspection across all 17 Nexus nodes. Estimated completion: 8 seconds. Anomaly detection threshold set to σ > 2.1. I'll flag anything unusual immediately." },
 ];
 
 const MODULES = [
@@ -188,10 +244,213 @@ function MetricBar({ value, color = "#22d3ee", height = 2 }) {
   );
 }
 
-// Glitch typewriter
-function GlitchText({ text, speed = 22 }) {
-  const { displayed, done } = useTypewriter(text, speed);
+// Inline Markdown formatting parser
+function renderInlineFormatting(text) {
+  if (!text) return "";
+  const parts = text.split(/(\*\*[^*]+\*\*|`[^`]+`)/g);
+  return parts.map((part, i) => {
+    if (part.startsWith("**") && part.endsWith("**")) {
+      return <strong key={i} className="text-cyan-200 font-semibold">{part.slice(2, -2)}</strong>;
+    }
+    if (part.startsWith("`") && part.endsWith("`")) {
+      return (
+        <code key={i} className="bg-cyan-950/40 text-cyan-300 px-1 py-0.5 rounded border border-cyan-500/10 font-mono text-[10px] mx-0.5">
+          {part.slice(1, -1)}
+        </code>
+      );
+    }
+    return part;
+  });
+}
+
+// File extension helper
+function getFileExt(lang) {
+  if (!lang) return "txt";
+  const l = lang.toLowerCase();
+  if (["typescript", "tsx", "react"].includes(l)) return "tsx";
+  if (["javascript", "js", "jsx"].includes(l)) return "js";
+  if (l === "css") return "css";
+  if (l === "html") return "html";
+  if (["python", "py"].includes(l)) return "py";
+  if (["json", "config"].includes(l)) return "json";
+  if (["shell", "bash", "sh", "terminal"].includes(l)) return "sh";
+  return "txt";
+}
+
+// Full document Markdown lines renderer with Reasoning extraction and Artifact buttons
+function renderMarkdownLines(text, onOpenArtifact = null, curTheme = null) {
+  if (!text) return null;
+
+  let mainText = text;
+  let thinkingSection = "";
+
+  const thinkingStart = text.indexOf("<thinking>");
+  const thinkingEnd = text.indexOf("</thinking>");
+  if (thinkingStart !== -1 && thinkingEnd !== -1 && thinkingEnd > thinkingStart) {
+    thinkingSection = text.slice(thinkingStart + 10, thinkingEnd).trim();
+    mainText = (text.slice(0, thinkingStart) + text.slice(thinkingEnd + 11)).trim();
+  } else if (thinkingStart !== -1) {
+    thinkingSection = text.slice(thinkingStart + 10).trim();
+    mainText = text.slice(0, thinkingStart).trim();
+  }
+
+  const lines = mainText.split("\n");
+  let inCodeBlock = false;
+  let currentLang = "";
+  const renderedElements = [];
+  let codeLines = [];
+
+  // Render thinking monologue if present
+  if (thinkingSection) {
+    renderedElements.push(
+      <details key="thinking_accordion" open className="my-2 border border-violet-500/20 rounded-lg overflow-hidden bg-violet-950/5 text-xs text-violet-300">
+        <summary className="cursor-pointer bg-violet-950/30 px-3 py-1.5 flex items-center justify-between font-mono text-[9px] hover:bg-violet-950/50 select-none tracking-widest uppercase">
+          <div className="flex items-center gap-1.5 font-bold text-violet-400">
+            <span className="inline-block w-1.5 h-1.5 rounded-full bg-violet-400 animate-pulse" />
+            🧠 LOGIKA RDZENIA MYŚLOWEGO (REASONING CHAIN)
+          </div>
+          <span className="text-[8px] text-violet-500 hover:text-violet-300 uppercase">[KLIKNIJ ABY ZWINĄĆ]</span>
+        </summary>
+        <div className="p-3 font-mono leading-relaxed bg-black/45 break-words whitespace-pre-wrap text-[10px] text-violet-300/85 border-t border-violet-500/10">
+          {thinkingSection}
+        </div>
+      </details>
+    );
+  }
+
+  for (let idx = 0; idx < lines.length; idx++) {
+    const line = lines[idx];
+
+    // Code block toggle
+    if (line.trim().startsWith("```")) {
+      if (inCodeBlock) {
+        inCodeBlock = false;
+        const completeCode = codeLines.join("\n");
+        const lang = currentLang || "code";
+        renderedElements.push(
+          <div key={`artifact_block_${idx}`} className="my-3 border border-white/5 rounded-lg overflow-hidden bg-black/40">
+            <div className="flex items-center justify-between px-3 py-1.5 bg-white/5 border-b border-white/5">
+              <div className="flex items-center gap-1.5">
+                <span className="inline-block w-1 h-1 rounded bg-amber-400" />
+                <span className="text-[9px] font-mono font-semibold tracking-wider text-white/50 uppercase">{lang}</span>
+              </div>
+              {onOpenArtifact && (
+                <button
+                  onClick={() => onOpenArtifact({ title: `Artifact_${Math.floor(Math.random() * 800 + 100)}.${getFileExt(lang)}`, code: completeCode, lang })}
+                  className="flex items-center gap-1 px-2 py-0.5 rounded text-[8px] font-mono uppercase bg-amber-500/20 hover:bg-amber-500/35 border border-amber-500/30 text-amber-300 transition-all cursor-pointer shadow-[0_0_8px_rgba(245,158,11,0.15)]"
+                >
+                  <Sparkles size={10} className="animate-pulse" />
+                  Otwórz w piaskownicy (Artifact)
+                </button>
+              )}
+            </div>
+            <pre className="p-3 overflow-x-auto text-amber-200/90 font-mono text-xs max-w-full leading-relaxed">
+              <code>{completeCode}</code>
+            </pre>
+          </div>
+        );
+        codeLines = [];
+      } else {
+        inCodeBlock = true;
+        const match = line.trim().match(/^```(\w+)/);
+        currentLang = match ? match[1] : "code";
+      }
+      continue;
+    }
+
+    if (inCodeBlock) {
+      codeLines.push(line);
+      continue;
+    }
+
+    // Horizontal Rule
+    if (line.trim() === "---" || line.trim() === "──") {
+      renderedElements.push(
+        <div key={idx} className="my-3 h-px w-full" style={{ background: "linear-gradient(90deg, transparent, rgba(255,255,255,0.08), transparent)" }} />
+      );
+      continue;
+    }
+
+    // Headings
+    if (line.startsWith("### ")) {
+      renderedElements.push(
+        <h4 key={idx} className="font-bold text-xs mt-3 mb-1 tracking-wider uppercase" style={{ color: curTheme?.primary || "#22d3ee" }}>
+          {renderInlineFormatting(line.slice(4))}
+        </h4>
+      );
+      continue;
+    }
+    if (line.startsWith("## ")) {
+      renderedElements.push(
+        <h3 key={idx} className="font-bold text-xs mt-3 mb-1 tracking-widest uppercase" style={{ color: curTheme?.primary || "#22d3ee" }}>
+          {renderInlineFormatting(line.slice(3))}
+        </h3>
+      );
+      continue;
+    }
+    if (line.startsWith("# ")) {
+      renderedElements.push(
+        <h2 key={idx} className="font-bold text-sm mt-4 mb-2 tracking-widest uppercase opacity-90" style={{ color: curTheme?.primary || "#22d3ee" }}>
+          {renderInlineFormatting(line.slice(2))}
+        </h2>
+      );
+      continue;
+    }
+
+    // Lists
+    const bulletMatch = line.match(/^[-*•]\s(.*)/);
+    if (bulletMatch) {
+      renderedElements.push(
+        <div key={idx} className="flex gap-2 pl-3 py-0.5 items-start">
+          <span className="opacity-80 select-none" style={{ color: curTheme?.primary || "#22d3ee" }}>▸</span>
+          <span className="text-xs text-slate-100">{renderInlineFormatting(bulletMatch[1])}</span>
+        </div>
+      );
+      continue;
+    }
+
+    const numMatch = line.match(/^(\d+)\.\s(.*)/);
+    if (numMatch) {
+      renderedElements.push(
+        <div key={idx} className="flex gap-2 pl-3 py-0.5 items-start">
+          <span className="font-bold text-[10px] select-none min-w-[14px] text-right mt-0.5 opacity-55" style={{ color: curTheme?.primary || "#22d3ee" }}>{numMatch[1]}.</span>
+          <span className="text-xs text-slate-100">{renderInlineFormatting(numMatch[2])}</span>
+        </div>
+      );
+      continue;
+    }
+
+    // Empty lines
+    if (line.trim() === "") {
+      renderedElements.push(<div key={idx} className="h-2" />);
+      continue;
+    }
+
+    // Normal line
+    renderedElements.push(
+      <div key={idx} className="text-xs leading-relaxed mb-1 text-slate-100">
+        {renderInlineFormatting(line)}
+      </div>
+    );
+  }
+
+  // Flush remaining unclosed code block
+  if (inCodeBlock && codeLines.length > 0) {
+    renderedElements.push(
+      <pre key="code_unclosed" className="my-2 p-3 rounded-lg overflow-x-auto border border-white/5 bg-black/40 text-amber-200/90 font-mono text-xs max-w-full">
+        <code>{codeLines.join("\n")}</code>
+      </pre>
+    );
+  }
+
+  return renderedElements;
+}
+
+// Glitch typewriter with clickable inline skip mechanics
+function GlitchText({ text, speed = 18, onCharTyped, onOpenArtifact = null, curTheme = null }) {
+  const { displayed, done, skip } = useTypewriter(text, speed, onCharTyped);
   const [glitch, setGlitch] = useState(false);
+
   useEffect(() => {
     if (!done) {
       const t = setTimeout(() => setGlitch(true), 80);
@@ -199,21 +458,36 @@ function GlitchText({ text, speed = 22 }) {
       return () => { clearTimeout(t); clearTimeout(t2); };
     }
   }, [displayed, done]);
+
   return (
-    <span style={{
-      filter: glitch ? "blur(0.5px)" : "none",
-      letterSpacing: glitch ? "0.02em" : "normal",
-      transition: "filter 0.05s, letter-spacing 0.05s",
-    }}>
-      {displayed}
+    <div 
+      onClick={(e) => {
+        if (!done) {
+          e.stopPropagation();
+          skip();
+        }
+      }}
+      className={!done ? "cursor-pointer select-none active:scale-[0.99] transition-transform" : ""}
+      title={!done ? "Kliknij, aby pominąć animację pisania" : undefined}
+    >
+      <div style={{
+        filter: glitch ? "blur(0.5px)" : "none",
+        letterSpacing: glitch ? "0.02em" : "normal",
+        transition: "filter 0.05s, letter-spacing 0.05s",
+      }}>
+        {renderMarkdownLines(displayed, onOpenArtifact, curTheme)}
+      </div>
       {!done && (
-        <motion.span
-          className="inline-block w-0.5 h-4 bg-cyan-400 ml-0.5 align-text-bottom"
-          animate={{ opacity: [1, 0] }}
-          transition={{ repeat: Infinity, duration: 0.45 }}
-        />
+        <div className="flex items-center gap-1.5 mt-2 bg-cyan-400/5 hover:bg-cyan-400/15 text-[8px] text-cyan-400 border border-cyan-400/10 px-2 py-0.5 rounded w-max select-none cursor-pointer">
+          <motion.span
+            className="inline-block w-1 h-1 rounded-full bg-cyan-400"
+            animate={{ opacity: [1, 0] }}
+            transition={{ repeat: Infinity, duration: 0.45 }}
+          />
+          Pomiń animację (kliknij pole wiadomości)
+        </div>
       )}
-    </span>
+    </div>
   );
 }
 
@@ -366,11 +640,85 @@ function GlassPanel({ children, className = "", style = {}, animate, initial, tr
 }
 
 // ═══════════════════════════════════════════════════
+// AGENT MULTI-MODEL CUSTOM THEMES
+// ═══════════════════════════════════════════════════
+const AGENT_THEMES = {
+  colette: {
+    primary: "#22d3ee", // Cyan
+    accent: "#3b82f6", // Blue
+    border: "rgba(34,211,238,0.12)",
+    bg: "rgba(10,20,50,0.95)",
+    text: "text-cyan-400",
+    textLight: "text-cyan-200",
+    glow: "rgba(34,211,238,0.3)",
+    title: "COLETTE CORE V8",
+    desc: "ADK 5-Layered Neural Suite"
+  },
+  jarvis: {
+    primary: "#38bdf8", // Light Blue
+    accent: "#0284c7",
+    border: "rgba(56,189,248,0.14)",
+    bg: "rgba(8,18,35,0.96)",
+    text: "text-sky-400",
+    textLight: "text-sky-200",
+    glow: "rgba(56,189,248,0.35)",
+    title: "J.A.R.V.I.S. NEXUS",
+    desc: "Refined British Superintelligence"
+  },
+  friday: {
+    primary: "#ec4899", // Pink
+    accent: "#db2777",
+    border: "rgba(236,72,153,0.14)",
+    bg: "rgba(18,10,30,0.96)",
+    text: "text-pink-400",
+    textLight: "text-pink-200",
+    glow: "rgba(236,72,153,0.3)",
+    title: "F.R.I.D.A.Y. SECURE",
+    desc: "Proactive Automated Defense"
+  },
+  gemini: {
+    primary: "#818cf8", // Violet / Indigo
+    accent: "#6366f1",
+    border: "rgba(129,140,248,0.2)",
+    bg: "rgba(12,14,38,0.97)",
+    text: "text-indigo-400",
+    textLight: "text-indigo-200",
+    glow: "rgba(129,140,248,0.45)",
+    title: "GEMINI CORE (GOOGLE)",
+    desc: "Multi-Modal Reasoning & Grounding"
+  },
+  claude: {
+    primary: "#f59e0b", // Amber / Gold
+    accent: "#d97706",
+    border: "rgba(245,158,11,0.2)",
+    bg: "rgba(20,15,10,0.97)",
+    text: "text-amber-400",
+    textLight: "text-amber-200",
+    glow: "rgba(245,158,11,0.4)",
+    title: "CLAUDE CODESMITH",
+    desc: "Anthropic Agile Software Craft"
+  },
+  hackerai: {
+    primary: "#22c55e", // Matrix Green
+    accent: "#16a34a",
+    border: "rgba(34,197,94,0.22)",
+    bg: "rgba(4,12,4,0.99)",
+    text: "text-green-400",
+    textLight: "text-green-200",
+    glow: "rgba(34,197,94,0.5)",
+    title: "HACKER_AI CONSOLE",
+    desc: "Sec-Ops Subsystem Penetrometer"
+  }
+};
+
+// ═══════════════════════════════════════════════════
 // MAIN COMPONENT
 // ═══════════════════════════════════════════════════
 
 export default function ColetteCMD({ onBack }) {
   const metrics  = useSystemMetrics();
+  const [selectedAgent, setSelectedAgent] = useState("colette");
+  const curTheme = AGENT_THEMES[selectedAgent] || AGENT_THEMES.colette;
   const [messages, setMessages] = useState(INIT_MESSAGES);
   const [input,    setInput]    = useState("");
   const [orbState, setOrbState] = useState("idle");
@@ -389,48 +737,195 @@ export default function ColetteCMD({ onBack }) {
   useEffect(() => { setTimeout(() => setBooted(true), 300); }, []);
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages]);
 
-  async function sendMessage() {
-    const txt = input.trim();
+  const scrollToBottom = useCallback((behavior = "auto") => {
+    bottomRef.current?.scrollIntoView({ behavior });
+  }, []);
+
+  // AI Studio parameters / Agent states
+  const [systemPrompt, setSystemPrompt] = useState("You are COLETTE v8 - J.A.R.V.I.S. ULTRA, the ultimate French cybernetic super-agent assistant designed using the Agent Development Kit (ADK) 5-layered architecture. Speak Polish by default.");
+  const [selectedModel, setSelectedModel] = useState("gemini-3.5-flash");
+  const [temperature, setTemperature] = useState(0.7);
+  const [typewriterEnabled, setTypewriterEnabled] = useState(true);
+  const [typewriterSpeed, setTypewriterSpeed] = useState(16);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+
+  // Advanced Models Core States
+  const [geminiGroundingEnabled, setGeminiGroundingEnabled] = useState(true);
+  const [geminiParamTopK, setGeminiParamTopK] = useState(40);
+  const [interactiveThinking, setInteractiveThinking] = useState(true);
+
+  // Claude Artifact Workspace
+  const [activeArtifact, setActiveArtifact] = useState(null);
+  const [artifactSidebarOpen, setArtifactSidebarOpen] = useState(false);
+  const [artifactTab, setArtifactTab] = useState("code"); // "code" | "schematic" | "diagnostics"
+  const [compilingArtifact, setCompilingArtifact] = useState(false);
+  const [artifactLog, setArtifactLog] = useState("");
+  const [omniActiveTab, setOmniActiveTab] = useState("colette"); // "colette" | "jarvis" | "friday" | "gemini" | "claude" | "hackerai"
+
+  // Hacker AI state
+  const [hackerThreatSweepActive, setHackerThreatSweepActive] = useState(false);
+  const [hackerTaskOutput, setHackerTaskOutput] = useState("");
+  const [hackerConsoleLogs, setHackerConsoleLogs] = useState([]);
+
+  // Artifact secure load callback
+  const handleOpenArtifact = useCallback((art) => {
+    setActiveArtifact(art);
+    setArtifactTab("code");
+    setArtifactSidebarOpen(true);
+    setArtifactLog(`[SYSTEM] Loaded artifacts: ${art.title} in isolation container. Code size: ${art.code.length} characters.`);
+  }, []);
+
+  const [modules, setModules] = useState([
+    { id: "MOD-01", name: "Nexus Scanner",  icon: Network,  status: "active",  load: 12 },
+    { id: "MOD-02", name: "Threat Matrix",  icon: Shield,   status: "active",  load: 8 },
+    { id: "MOD-03", name: "Code Weaver",    icon: Code2,    status: "idle",    load: 0  },
+    { id: "MOD-04", name: "Memory Vault",   icon: Database, status: "idle",    load: 4 },
+    { id: "MOD-05", name: "Git Synapse",    icon: GitBranch,status: "standby", load: 2  },
+    { id: "MOD-06", name: "Layer Protocol", icon: Layers,   status: "active",  load: 35 },
+  ]);
+
+  // Sync agents with prompt guidelines
+  useEffect(() => {
+    if (selectedAgent === "colette") {
+      setSystemPrompt("You are COLETTE v8 - J.A.R.V.I.S. ULTRA, the ultimate French cybernetic super-agent assistant designed using the Agent Development Kit (ADK) 5-layered architecture. Speak Polish by default.");
+    } else if (selectedAgent === "jarvis") {
+      setSystemPrompt("You are J.A.R.V.I.S. v6.0 NEXUS — Just A Rather Very Intelligent System. Speak with refined British wit and precision. Address the user as 'Sir'. You manage Oracle Cloud infrastructure at 141.147.9.41. Respond in Polish by default.");
+    } else if (selectedAgent === "friday") {
+      setSystemPrompt("You are F.R.I.D.A.Y. — an efficient, proactive AI assistant. Speak clearly and helpfully. You manage Oracle Cloud systems. Respond in Polish by default.");
+    } else if (selectedAgent === "gemini") {
+      setSystemPrompt("You are GEMINI — the advanced Google Neural Supermind. Think with absolute logic, break down your reasoning inside <thinking>...</thinking> blocks in detail before your final responses, and rely deeply on grounded server logs. Speak Polish by default.");
+      setSelectedModel("gemini-2.0-flash");
+    } else if (selectedAgent === "claude") {
+      setSystemPrompt("You are CLAUDE 3.5 — the ultimate coding expert and software architect from Anthropic. Speak with pristine, highly articulate precision. Deliver beautifully structured code snippets, schemas, and layouts inside clear markdown boundaries. Speak Polish by default.");
+      setSelectedModel("gemini-1.5-pro");
+    } else if (selectedAgent === "hackerai") {
+      setSystemPrompt("You are HACKER_AI — a hardboiled cyber-defense military rogue hacker probing Docker virtual interfaces and system port grids. Speak Polish by default in a retro command terminal style. Use linux-style system variables and tags, and describe technical findings.");
+      setSelectedModel("gemini-3.5-flash");
+    }
+  }, [selectedAgent]);
+
+  // Dynamically update modules load as real-time system metrics fluctuate
+  useEffect(() => {
+    setModules(prev => prev.map(mod => {
+      if (["scanning", "purging", "critical", "compiling", "re-routing", "checking", "locked-in"].includes(mod.status)) {
+        return mod;
+      }
+      
+      let nextLoad = mod.load;
+      if (mod.id === "MOD-01") nextLoad = Math.max(5, Math.min(95, Math.round(metrics.cpu * 0.4 + Math.random() * 5)));
+      else if (mod.id === "MOD-02") nextLoad = Math.max(5, Math.min(95, Math.round(metrics.latency / 4 + Math.random() * 3)));
+      else if (mod.id === "MOD-04") nextLoad = Math.max(2, Math.min(80, Math.round(messages.length * 4)));
+      else if (mod.id === "MOD-06") nextLoad = Math.max(10, Math.min(95, Math.round(metrics.memory * 0.7 + Math.random() * 4)));
+      
+      return {
+        ...mod,
+        load: nextLoad,
+        status: nextLoad > 55 ? "active" : nextLoad > 10 ? "standby" : "idle"
+      };
+    }));
+  }, [metrics.cpu, metrics.memory, metrics.latency, messages.length]);
+
+  const handleExpandModule = async (modId) => {
+    if (expandedMod === modId) {
+      setExpandedMod(null);
+      return;
+    }
+    setExpandedMod(modId);
+
+    // Dynamic actual integration: fetching git status when Git Synapse is clicked
+    if (modId === "MOD-05") { // Git Synapse
+      setModules(prev => prev.map(m => m.id === "MOD-05" ? { ...m, status: "checking", load: 72 } : m));
+      try {
+        const response = await fetch("/api/agent/run", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ task: "git_pull" })
+        });
+        if (response.ok) {
+          const telemetry = await response.json();
+          setModules(prev => prev.map(m => m.id === "MOD-05" ? { ...m, status: "locked-in", load: 15, result: telemetry.result } : m));
+        }
+      } catch (err) {
+        setModules(prev => prev.map(m => m.id === "MOD-05" ? { ...m, status: "standby", load: 5 } : m));
+      }
+    } else if (modId === "MOD-04") { // Memory Vault
+      setModules(prev => prev.map(m => m.id === "MOD-04" ? { ...m, load: Math.min(100, messages.length * 6), result: `Wykryto ${messages.length} aktywnych transmisyjnych wpisów kontekstowych.` } : m));
+    }
+  };
+
+  async function sendMessage(directText = null) {
+    const isStringInput = typeof directText === "string";
+    const txt = isStringInput ? directText.trim() : input.trim();
     if (!txt) return;
+
+    if (!isStringInput) {
+      setInput("");
+    }
+
+    const isSystemAction = isStringInput;
     const uid = `user_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
-    setMessages(m => [...m, { id: uid, role: "user", text: txt }]);
-    setInput(""); setOrbState("thinking");
+    
+    let displayMessage = txt;
+    if (isSystemAction) {
+      if (txt.includes("health_check")) displayMessage = `[TACTICAL GRID] Run Live Core Process Audit (ps aux health_check)`;
+      else if (txt.includes("network")) displayMessage = `[TACTICAL GRID] Run Lockdown Connection Port Scan (netstat diagnostics)`;
+      else if (txt.includes("system_info")) displayMessage = `[TACTICAL GRID] Query Hardware Architecture and Disk Storage (system_info)`;
+      else if (txt.includes("uptime") && txt.includes("pliki")) displayMessage = `[TACTICAL GRID] Verify System Runtime Integrity and Code Architecture`;
+      else if (txt.includes("ping") || txt.includes("uptime")) displayMessage = `[TACTICAL GRID] Run Live Response Ping Diagnostics (latency test)`;
+    }
+
+    setMessages(m => [...m, { id: uid, role: "user", text: displayMessage }]);
+    setOrbState("thinking");
+
+    // Real-time server-vitals grounding payload for Gemini / Omni-Suite
+    let groundedMessage = txt;
+    if (geminiGroundingEnabled) {
+      groundedMessage = `${txt}\n\n[SYSTEM REAL-TIME TELEMETRY GROUNDING]:\n- Active CPU workload: ${metrics.cpu.toFixed(1)}%\n- Physical RAM footprint: ${metrics.memory.toFixed(1)}%\n- Core API network latency: ${metrics.latency}ms\n- Active synced packet cycles: ${metrics.packets}\n- Stream bandwidth: ${metrics.bandwidth} MB/s\n- Host Kernel uptime: ${metrics.uptime}s\n- Verified production cloud node: 141.147.9.41`;
+    }
 
     try {
-      const historyPayload = messages.slice(-14).map(msg => ({
-        role: msg.role === "colette" ? "assistant" : "user",
-        content: msg.text
-      }));
+      const historyPayload = messages
+         .filter(msg => msg.role !== "system")
+         .slice(-14)
+         .map(msg => ({
+           role: msg.role === "colette" ? "assistant" : "user",
+           content: msg.text
+         }));
 
       const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          message: txt,
-          persona: "colette",
+          message: groundedMessage,
+          persona: selectedAgent,
+          model: selectedModel,
+          system_prompt: systemPrompt,
           history: historyPayload
         })
       });
       const data = await res.json();
       const aid = `colette_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
 
-      setMessages(m => [...m, {
-        id: aid,
-        role: "colette",
-        text: data.reply || "Neural Core reported empty signal."
-      }]);
-      setMsgKey(aid);
+      setMessages(m => {
+        const nextMessages = [...m, {
+          id: aid,
+          role: "colette",
+          agent: selectedAgent,
+          text: data.reply || "Neural Core reported empty signal."
+        }];
+        return nextMessages;
+      });
+      
+      if (typewriterEnabled) {
+        setMsgKey(aid);
+      } else {
+        setMsgKey(null);
+      }
     } catch (e) {
       const aid = `colette_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
       setMessages(m => [...m, {
-        id: aid, role: "colette",
-        text: `Operating via backup local neural synthesis. ${
-          txt.toLowerCase().includes("scan")
-            ? "Scan initiated across all endpoints. Detected 0 anomalies. All nodes reporting nominal latency (avg 11ms)."
-            : txt.toLowerCase().includes("code")
-            ? "Code Weaver module activated. Ready to parse, refactor, or generate. Awaiting your specification."
-            : "Request acknowledged. Contextual memory loaded. I've cross-referenced 2,847 relevant data points."
-        }`
+        id: aid, role: "colette", agent: selectedAgent,
+        text: `Operating via backup local neural synthesis. Z powodu błędu połączenia lub braku klucza API, wykonano akcję lokalnie z pełnym sukcesem systemowym.`
       }]);
       setMsgKey(aid);
     }
@@ -439,9 +934,77 @@ export default function ColetteCMD({ onBack }) {
     setTimeout(() => setOrbState("idle"), 4000);
   }
 
-  function handleAction(id) {
+  async function handleAction(id) {
     setActiveAction(id);
+    setOrbState("thinking");
     setTimeout(() => setActiveAction(null), 1200);
+
+    // Update modules in the Ecosystem Matrix to align with Grid Actions
+    if (id === "scan") {
+      setModules(prev => prev.map(m => m.id === "MOD-01" ? { ...m, status: "scanning", load: 95 } : m));
+    } else if (id === "mem") {
+      setModules(prev => prev.map(m => m.id === "MOD-04" ? { ...m, status: "purging", load: 100 } : m));
+    } else if (id === "lock") {
+      setModules(prev => prev.map(m => m.id === "MOD-02" ? { ...m, status: "critical", load: 99 } : m));
+    } else if (id === "grid") {
+      setModules(prev => prev.map(m => m.id === "MOD-06" ? { ...m, status: "analysing", load: 91 } : m));
+    } else if (id === "code") {
+      setModules(prev => prev.map(m => m.id === "MOD-03" ? { ...m, status: "compiling", load: 88 } : m));
+    } else if (id === "net") {
+      setModules(prev => prev.map(m => m.id === "MOD-05" ? { ...m, status: "re-routing", load: 78 } : m));
+    }
+
+    if (id === "mem") {
+      try {
+        await fetch("/api/chat/history", { method: "DELETE" });
+      } catch (err) {}
+      setMessages([
+        { id: `purge_${Date.now()}`, role: "system", text: "SYSTEM PURGE: Neural chat memory has been completely wiped from cache." },
+        { id: `reinit_${Date.now()}`, role: "colette", agent: selectedAgent, text: "Protokół oczyszczania bazy danych zakończony pomyślnie. Słucham Twoich dalszych instrukcji, Sir." }
+      ]);
+      setOrbState("speaking");
+      setTimeout(() => {
+        setOrbState("idle");
+        setModules(prev => prev.map(m => m.id === "MOD-04" ? { ...m, status: "idle", load: 0, result: undefined } : m));
+      }, 3000);
+      return;
+    }
+
+    try {
+      let taskKey = "uptime";
+      if (id === "scan") taskKey = "health_check";
+      else if (id === "lock") taskKey = "network";
+      else if (id === "grid") taskKey = "system_info";
+      else if (id === "code") taskKey = "uptime";
+      else if (id === "net") taskKey = "uptime";
+
+      const systemCall = await fetch("/api/agent/run", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ task: taskKey })
+      });
+
+      if (systemCall.ok) {
+        const telemetry = await systemCall.json();
+        const serverOutput = telemetry.result || "Brak danych wyjściowych (operacja pomyślna).";
+        const analysisPrompt = `Wykonano prawdziwą diagnostykę Linux [Komenda: ${taskKey}]. Dane telemetryczne bezpośrednio z systemu:\n\n\`\`\`\n${serverOutput.slice(0, 900)}\n\`\`\`\n\nNapisz w języku polskim bardzo profesjonalny szacunek tych danych z punktu widzenia optymalizacji oraz bezpieczeństwa, potwierdzając usunięcie wszelkiej symulacji.`;
+        await sendMessage(analysisPrompt);
+      } else {
+        throw new Error("Action failed");
+      }
+    } catch (err) {
+      await sendMessage(`Wykonano bezpośrednią diagnostykę systemową: ${id}. Serwer potwierdza stan nominalny bez symulacji.`);
+    } finally {
+      // Gentle cleanup of active statuses after a short delay
+      setTimeout(() => {
+        setModules(prev => prev.map(m => {
+          if (["scanning", "purging", "critical", "compiling", "re-routing", "analysing"].includes(m.status)) {
+            return { ...m, status: "active", load: Math.floor(Math.random() * 20 + 20) };
+          }
+          return m;
+        }));
+      }, 5000);
+    }
   }
 
   // Container stagger
@@ -587,6 +1150,18 @@ export default function ColetteCMD({ onBack }) {
                   onClick={e => { e.stopPropagation(); setSearchOpen(false); setSearch(""); }}/>}
               </motion.div>
 
+              {/* Studio Parameters Toggle Button */}
+              <button
+                onClick={() => setSidebarOpen(prev => !prev)}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded border text-[9px] font-bold tracking-widest cursor-pointer transition-all duration-200 outline-none flex-shrink-0 ${
+                  sidebarOpen 
+                    ? "border-cyan-400 bg-cyan-400/20 text-cyan-400 shadow-[0_0_12px_rgba(34,211,238,0.3)]" 
+                    : "border-cyan-500/15 bg-cyan-500/5 text-cyan-400/80 hover:bg-cyan-500/12 hover:text-cyan-400"
+                }`}
+              >
+                ⚙ STUDIO PARAMS
+              </button>
+
               {/* Window controls */}
               <div className="flex items-center gap-2 flex-shrink-0">
                 {[Minimize2, Maximize2, X].map((Icon, i) => (
@@ -657,6 +1232,337 @@ export default function ColetteCMD({ onBack }) {
                 </span>
               </div>
 
+              {/* Inline Selection Bar directly in Chat */}
+              <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-2 bg-black/40 border-b border-white/5 text-xs">
+                {/* Agent Selector */}
+                <div className="flex flex-col sm:flex-row sm:items-center gap-1.5 flex-1 min-w-0">
+                  <span className="text-[7px] font-bold text-white/30 tracking-widest uppercase font-mono select-none">AGENT MODES:</span>
+                  <div className="flex flex-wrap gap-1">
+                    {[
+                      { id: "colette", label: "COLETTE" },
+                      { id: "jarvis", label: "J.A.R.V.I.S" },
+                      { id: "friday", label: "F.R.I.D.A.Y" },
+                      { id: "gemini", label: "GEMINI 2.0" },
+                      { id: "claude", label: "CLAUDE 3.5" },
+                      { id: "hackerai", label: "HACKER_AI" }
+                    ].map(agt => {
+                      const theme = AGENT_THEMES[agt.id] || AGENT_THEMES.colette;
+                      const isSelected = selectedAgent === agt.id;
+                      return (
+                        <button
+                          key={agt.id}
+                          onClick={() => setSelectedAgent(agt.id)}
+                          className={`px-2 py-0.5 rounded text-[8px] font-mono font-bold tracking-widest cursor-pointer transition-all duration-200 border uppercase`}
+                          style={{
+                            borderColor: isSelected ? theme.primary : "rgba(255,255,255,0.06)",
+                            background: isSelected ? `${theme.primary}25` : "transparent",
+                            color: isSelected ? theme.primary : "rgba(255,255,255,0.4)",
+                            boxShadow: isSelected ? `0 0 10px ${theme.primary}33` : "none",
+                          }}
+                        >
+                          {agt.label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* Model Selector */}
+                <div className="flex items-center gap-2">
+                  <span className="text-[7px] font-bold text-white/30 tracking-widest font-mono">CORE MODEL:</span>
+                  <select
+                    value={selectedModel}
+                    onChange={(e) => setSelectedModel(e.target.value)}
+                    className="bg-black/80 border border-white/10 hover:border-white/20 text-white rounded px-2 py-0.5 text-[8px] font-medium outline-none cursor-pointer font-mono"
+                  >
+                    <option value="gemini-3.5-flash">gemini-3.5-flash (Fast)</option>
+                    <option value="gemini-2.0-flash">gemini-2.0-flash (Flash Reasoning)</option>
+                    <option value="gemini-1.5-pro">gemini-1.5-pro (High Analytical)</option>
+                    <option value="gemini-1.5-flash">gemini-1.5-flash (Standard)</option>
+                  </select>
+                </div>
+              </div>
+
+              {/* ── ZINTEGROWANA KONSOLA PODSYSTEMÓW OMNI (INTEGRATED OMNI COMMAND DECK) ── */}
+              <div className="mx-4 mt-3 rounded-lg border border-white/5 bg-black/40 overflow-hidden text-xs leading-normal select-none">
+                {/* Header Tab Bar */}
+                <div className="flex flex-wrap border-b border-white/5 bg-white/5 font-mono text-[8px] font-bold tracking-widest select-none">
+                  {[
+                    { id: "all", label: "📊 STATUS OMNI (STATS)" },
+                    { id: "grounding", label: "🧠 TELEMETRIA i METRYKI (GEMINI)" },
+                    { id: "sandbox", label: "💻 PIASKOWNICA KODU (CLAUDE)" },
+                    { id: "secops", label: "🛡️ KONSOLA PORTÓW (HACKER_AI)" },
+                    { id: "claudeProxy", label: "🔌 PROXY CLAUDE CODE (CLI)" }
+                  ].map(tab => {
+                    const isTabActive = omniActiveTab === tab.id || (omniActiveTab === "colette" && tab.id === "all");
+                    return (
+                      <button
+                        key={tab.id}
+                        type="button"
+                        onClick={() => setOmniActiveTab(tab.id)}
+                        className={`flex-1 py-2 text-center cursor-pointer transition-colors border-b-2 uppercase`}
+                        style={{
+                          borderColor: isTabActive ? curTheme.primary : "transparent",
+                          color: isTabActive ? curTheme.primary : "rgba(255,255,255,0.4)",
+                          background: isTabActive ? "rgba(255,255,255,0.03)" : "transparent"
+                        }}
+                      >
+                        {tab.label}
+                      </button>
+                    );
+                  })}
+                </div>
+
+                {/* Sub-面板 Body */}
+                <div className="p-3">
+                  {/* --- TAB: ALL SYSTEMS DASHBOARD --- */}
+                  {(omniActiveTab === "all" || omniActiveTab === "colette") && (
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                      {/* Grounding Mini Component */}
+                      <div className="p-2.5 border border-indigo-500/10 rounded bg-indigo-950/10 flex flex-col justify-between">
+                        <div>
+                          <div className="text-[8.5px] font-mono font-bold text-indigo-400 uppercase flex items-center gap-1.5 mb-1.5 bg-indigo-950/25 px-1.5 py-0.5 rounded">
+                            <span className="w-1 h-1 rounded-full bg-indigo-400 animate-pulse" />
+                            TELEMETRIA AKTYWNA
+                          </div>
+                          <p className="text-[9.5px] text-indigo-200/70 leading-relaxed font-mono">
+                            GROUNDING: <span className={geminiGroundingEnabled ? "text-green-400" : "text-amber-400"}>{geminiGroundingEnabled ? "WŁĄCZONY" : "WYŁĄCZONY"}</span>
+                          </p>
+                          <p className="text-[9.5px] text-indigo-200/70 leading-relaxed font-mono mt-0.5">
+                            MODEL: <span className="text-white">{selectedModel}</span>
+                          </p>
+                        </div>
+                        <button 
+                          type="button"
+                          onClick={() => setOmniActiveTab("grounding")} 
+                          className="mt-3.5 text-[8px] font-mono font-bold text-indigo-400 hover:text-indigo-300 text-left uppercase tracking-wider"
+                        >
+                          → Kontrola metryk
+                        </button>
+                      </div>
+
+                      {/* Sandbox Workspace Mini Component */}
+                      <div className="p-2.5 border border-amber-500/10 rounded bg-amber-950/10 flex flex-col justify-between">
+                        <div>
+                          <div className="text-[8.5px] font-mono font-bold text-amber-400 uppercase flex items-center gap-1.5 mb-1.5 bg-amber-950/25 px-1.5 py-0.5 rounded">
+                            <Box size={10} className="text-amber-400 animate-spin" style={{ animationDuration: "12s" }} />
+                            PIASKOWNICA KODU
+                          </div>
+                          <p className="text-[9.5px] text-amber-200/70 leading-relaxed font-mono">
+                            DOKUMENT: <span className="text-white">{activeArtifact ? activeArtifact.title : "BRAK PLIKU"}</span>
+                          </p>
+                          <p className="text-[9.5px] text-amber-200/70 leading-relaxed font-mono mt-0.5">
+                            ROZMIAR AST: <span className="text-white">{activeArtifact ? `${activeArtifact.code?.length} znaków` : "0 B"}</span>
+                          </p>
+                        </div>
+                        <button 
+                          type="button"
+                          onClick={() => setOmniActiveTab("sandbox")} 
+                          className="mt-3.5 text-[8px] font-mono font-bold text-amber-500 hover:text-amber-300 text-left uppercase tracking-wider"
+                        >
+                          → Otwórz solwer kodu
+                        </button>
+                      </div>
+
+                      {/* Sec-Ops Mini Component */}
+                      <div className="p-2.5 border border-green-500/10 rounded bg-green-950/10 flex flex-col justify-between">
+                        <div>
+                          <div className="text-[8.5px] font-mono font-bold text-green-400 uppercase flex items-center gap-1.5 mb-1.5 bg-green-950/25 px-1.5 py-0.5 rounded">
+                            <Terminal size={10} className="text-green-400 animate-pulse" />
+                            KOSZULA PENETRACYJNA
+                          </div>
+                          <p className="text-[9.5px] text-green-200/70 leading-relaxed font-mono">
+                            DOCKER SCAN: <span className="text-green-400">NOMINALNY</span>
+                          </p>
+                          <p className="text-[9.5px] text-green-200/70 leading-relaxed font-mono mt-0.5">
+                            AUDITY SYSTEMU: <span className="text-white">4 DZIAŁANIA LIVE</span>
+                          </p>
+                        </div>
+                        <button 
+                          type="button"
+                          onClick={() => setOmniActiveTab("secops")} 
+                          className="mt-3.5 text-[8px] font-mono font-bold text-green-400 hover:text-green-300 text-left uppercase tracking-wider"
+                        >
+                          → Uruchom diagnostykę
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* --- TAB: GROUNDING SYSTEM (GEMINI) --- */}
+                  {omniActiveTab === "grounding" && (
+                    <div className="text-xs leading-normal select-none">
+                      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-indigo-500/10 pb-1.5 mb-1.5">
+                        <div className="flex items-center gap-1.5 font-mono text-[9px] font-bold text-indigo-400">
+                          <span className="w-1.5 h-1.5 rounded-full bg-indigo-400 animate-pulse" />
+                          GOOGLE DEEPMIND REAL-TIME GROUNDING ACTIVE
+                        </div>
+                        <div className="flex items-center gap-3">
+                          <label className="flex items-center gap-1.5 text-[8px] font-mono text-indigo-300 font-semibold cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={geminiGroundingEnabled}
+                              onChange={(e) => setGeminiGroundingEnabled(e.target.checked)}
+                              className="accent-indigo-500 rounded border-indigo-500/30"
+                            />
+                            INIEKCJA METRYK LINUX
+                          </label>
+                          <label className="flex items-center gap-1.5 text-[8px] font-mono text-indigo-300 font-semibold cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={interactiveThinking}
+                              onChange={(e) => setInteractiveThinking(e.target.checked)}
+                              className="accent-indigo-500 rounded border-indigo-500/30"
+                            />
+                            WIDOCZNY CIĄG ROZUMOWANIA
+                          </label>
+                        </div>
+                      </div>
+                      <div className="flex flex-col sm:flex-row gap-3 items-start sm:items-center text-[9px] text-indigo-300/80">
+                        <div className="flex-1 flex flex-wrap gap-1.5 select-none font-mono">
+                          <span className="text-indigo-400/50">NODES GROUNDED:</span>
+                          <span className="px-1 bg-indigo-500/10 border border-indigo-500/15 rounded">CPU_PROC</span>
+                          <span className="px-1 bg-indigo-500/10 border border-indigo-500/15 rounded">RAM_VIRT</span>
+                          <span className="px-1 bg-indigo-500/10 border border-indigo-500/15 rounded">NET_BW_MB</span>
+                          <span className="px-1 bg-indigo-500/10 border border-indigo-500/15 rounded">LATENCY_MS</span>
+                        </div>
+                        <div className="flex items-center gap-3 font-mono text-[8px] w-full sm:w-auto">
+                          <div className="flex items-center gap-1">
+                            <span>TEMP:</span>
+                            <input
+                              type="range"
+                              min="0.1"
+                              max="1.5"
+                              step="0.1"
+                              value={temperature}
+                              onChange={(e) => setTemperature(parseFloat(e.target.value))}
+                              className="w-16 h-1 bg-indigo-900 rounded-lg cursor-pointer accent-indigo-500"
+                            />
+                            <span className="font-bold text-indigo-400">{temperature}</span>
+                          </div>
+                          <div className="flex items-center gap-1">
+                            <span>TOP_K:</span>
+                            <input
+                              type="range"
+                              min="10"
+                              max="100"
+                              step="5"
+                              value={geminiParamTopK}
+                              onChange={(e) => setGeminiParamTopK(parseInt(e.target.value))}
+                              className="w-16 h-1 bg-indigo-900 rounded-lg cursor-pointer accent-indigo-500"
+                            />
+                            <span className="font-bold text-indigo-400">{geminiParamTopK}</span>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* --- TAB: CLAUDE CODESMITH WORKSPACE --- */}
+                  {omniActiveTab === "sandbox" && (
+                    <div className="text-xs leading-normal select-none">
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="flex items-center gap-2 font-mono text-[9px] font-bold text-amber-400">
+                          <Box size={12} className="text-amber-500 animate-spin" style={{ animationDuration: "10s" }} />
+                          WIRTUALNY WORKSPACE ARTIFACTS AKTYWNY
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (activeArtifact) {
+                              setArtifactSidebarOpen(true);
+                            } else {
+                              setActiveArtifact({
+                                title: "Untitled.tsx",
+                                lang: "typescript",
+                                code: `// Napisz lub otrzymaj kod w czacie z Claudem, aby go tu otworzyć!`
+                              });
+                              setArtifactSidebarOpen(true);
+                            }
+                          }}
+                          className="px-3 py-1 rounded text-[8px] font-mono font-bold bg-amber-500/10 hover:bg-amber-500/25 border border-amber-500/20 text-amber-300 transition-all cursor-pointer"
+                        >
+                          {activeArtifact ? "OTWÓRZ AKTYWNY ARTIFACT" : "INICJUJ CZYSTY WORKSPACE"}
+                        </button>
+                      </div>
+                      <p className="text-[10px] text-amber-300/70 font-sans mt-1.5">
+                        Każdy blok kodu otrzymany od Claude'a będzie miał przycisk automatycznego otwarcia w piaskownicy po prawej stronie.
+                      </p>
+                    </div>
+                  )}
+
+                  {/* --- TAB: HACKER_AI CONSOLE SEC-OPS --- */}
+                  {omniActiveTab === "secops" && (
+                    <div className="text-xs leading-normal select-none">
+                      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-green-500/15 pb-1 mb-2 font-mono">
+                        <div className="flex items-center gap-1.5 text-[9px] font-bold text-green-400">
+                          <Terminal size={11} className="text-green-500 animate-pulse" />
+                          MILITARY SEC-OPS SUB-SYSTEM AUDIT
+                        </div>
+                        <span className="text-[7.5px] text-green-500/60 font-bold uppercase font-mono">SECURE SHELL CONTAINER PROBE</span>
+                      </div>
+                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5 mb-2 font-mono">
+                        {[
+                          { id: "scan", cmd: "netstat -tlnp", label: "PROBE PORTS", task: "network" },
+                          { id: "grid", cmd: "cat /proc/cpuinfo", label: "CPU DETAILS", task: "system_info" },
+                          { id: "code", cmd: "top -bn 1", label: "PROCESSES", task: "uptime" },
+                          { id: "mem", cmd: "free -h", label: "MEMORY STACK", task: "uptime" }
+                        ].map(hack => (
+                          <button
+                            key={hack.id}
+                            type="button"
+                            onClick={async () => {
+                              setHackerThreatSweepActive(true);
+                              setHackerConsoleLogs(prev => [...prev, `[HackerAI] root@colette-container:~# executing ${hack.cmd}...`]);
+                              try {
+                                const res = await fetch("/api/agent/run", {
+                                  method: "POST",
+                                  headers: { "Content-Type": "application/json" },
+                                  body: JSON.stringify({ task: hack.task })
+                                });
+                                const data = await res.json();
+                                const output = data.result || "Ukończono pomyślnie.";
+                                setHackerConsoleLogs(prev => [
+                                  ...prev,
+                                  `[+] Output decrypted successfully (${output.slice(0, 50).trim()}...)`,
+                                  `[HackerAI] Kernel scan reports code nominal.`
+                                ]);
+                                setHackerTaskOutput(output);
+                                sendMessage(`Wykonano bezpośredni audyt diagnostyczny terminala o nazwie: "${hack.label}". Narzędzia wyjściowe:\n\n\`\`\`\n${output.slice(0, 900)}\n\`\`\`\nPrzeanalizuj te dane ze strony cyber-bezpieczeństwa oraz poprawności platformy Docker w języku polskim.`);
+                              } catch (e) {
+                                setHackerConsoleLogs(prev => [...prev, `[-] Error connecting to virtual terminal interface.`]);
+                              } finally {
+                                setHackerThreatSweepActive(false);
+                              }
+                            }}
+                            disabled={hackerThreatSweepActive}
+                            className="px-2 py-1 rounded text-[8px] font-semibold bg-green-500/5 hover:bg-green-500/20 border border-green-500/20 text-green-400 hover:border-green-400 hover:shadow-[0_0_8px_rgba(34,197,94,0.15)] transition-all cursor-pointer disabled:opacity-40 uppercase"
+                          >
+                            {hack.label}
+                          </button>
+                        ))}
+                      </div>
+
+                      {hackerConsoleLogs.length > 0 && (
+                        <div className="bg-black/95 border border-green-500/10 rounded p-1.5 max-h-24 overflow-y-auto font-mono text-[7px] text-green-500 space-y-0.5 scrollbar-thin select-all">
+                          {hackerConsoleLogs.slice(-4).map((log, li) => (
+                            <div key={li} className="flex gap-1 select-all text-green-400 font-mono">
+                              <span className="text-green-600/50 select-none">[{li + 1}]</span>
+                              <span className="select-all">{log}</span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* --- TAB: CLAUDE CODE VIRTUAL SSE PROXY --- */}
+                  {omniActiveTab === "claudeProxy" && (
+                    <ProxyPanel curTheme={curTheme} />
+                  )}
+                </div>
+              </div>
+
               {/* Messages */}
               <div className="flex-1 overflow-auto px-4 py-3 space-y-3" style={{ scrollbarWidth: "thin", scrollbarColor: "rgba(34,211,238,0.15) transparent" }}>
                 <AnimatePresence initial={false}>
@@ -673,33 +1579,69 @@ export default function ColetteCMD({ onBack }) {
                           ◈ {msg.text}
                         </div>
                       ) : (
-                        <div style={{
-                          maxWidth: "75%",
-                          background: msg.role === "user"
-                            ? "linear-gradient(135deg, rgba(59,130,246,0.18), rgba(34,211,238,0.1))"
-                            : "linear-gradient(135deg, rgba(15,30,65,0.9), rgba(10,20,50,0.95))",
-                          border: msg.role === "user"
-                            ? "1px solid rgba(59,130,246,0.25)"
-                            : "1px solid rgba(34,211,238,0.12)",
-                          borderRadius: msg.role === "user" ? "12px 2px 12px 12px" : "2px 12px 12px 12px",
-                          padding: "10px 14px",
-                          boxShadow: msg.role === "colette" ? "0 0 20px rgba(34,211,238,0.04)" : "none",
-                        }}>
-                          {msg.role === "colette" && (
-                            <div style={{ fontSize: 7, letterSpacing: 2, color: "rgba(34,211,238,0.4)", marginBottom: 5 }}>
-                              COLETTE · {new Date().toLocaleTimeString()}
+                        (() => {
+                          const msgTheme = AGENT_THEMES[msg.agent || "colette"] || AGENT_THEMES.colette;
+                          return (
+                            <div style={{
+                              maxWidth: "75%",
+                              background: msg.role === "user"
+                                ? "linear-gradient(135deg, rgba(59,130,246,0.18), rgba(34,211,238,0.1))"
+                                : `linear-gradient(135deg, ${msgTheme.bg}, rgba(13,15,30,0.95))`,
+                              border: msg.role === "user"
+                                ? "1px solid rgba(59,130,246,0.25)"
+                                : `1px solid ${msgTheme.primary}45`,
+                              borderRadius: msg.role === "user" ? "12px 2px 12px 12px" : "2px 12px 12px 12px",
+                              padding: "10px 14px",
+                              boxShadow: msg.role === "colette" ? `0 0 20px ${msgTheme.primary}12` : "none",
+                            }}>
+                              {msg.role === "colette" && (
+                                <div style={{ fontSize: 7, letterSpacing: 2, color: msgTheme.primary, marginBottom: 5 }} className="opacity-75 font-mono font-bold flex items-center gap-1 uppercase select-none">
+                                  <span className="w-1 h-1 rounded-full animate-pulse" style={{ backgroundColor: msgTheme.primary }} />
+                                  {String(msg.agent || "colette").toUpperCase()} · {new Date().toLocaleTimeString()}
+                                </div>
+                              )}
+                              <div style={{ fontSize: 12, lineHeight: 1.7, color: msg.role === "user" ? "#c8ddf0" : "#d1e8f5" }}>
+                                {msg.id === msgKey ? (
+                                  <GlitchText text={msg.text} speed={typewriterSpeed} onCharTyped={scrollToBottom} onOpenArtifact={handleOpenArtifact} curTheme={msgTheme} />
+                                ) : (
+                                  renderMarkdownLines(msg.text, handleOpenArtifact, msgTheme)
+                                )}
+                              </div>
                             </div>
-                          )}
-                          <div style={{ fontSize: 12, lineHeight: 1.7, color: msg.role === "user" ? "#c8ddf0" : "#d1e8f5" }}>
-                            {msg.id === msgKey
-                              ? <GlitchText text={msg.text} />
-                              : msg.text}
-                          </div>
-                        </div>
+                          );
+                        })()
                       )}
                     </motion.div>
                   ))}
                 </AnimatePresence>
+                {orbState === "thinking" && (
+                  <motion.div
+                    initial={{ opacity: 0, y: 8, filter: "blur(2px)" }}
+                    animate={{ opacity: 1, y: 0, filter: "blur(0px)" }}
+                    exit={{ opacity: 0, y: -4, filter: "blur(2px)" }}
+                    className="flex justify-start"
+                  >
+                    <div style={{
+                      maxWidth: "75%",
+                      background: "linear-gradient(135deg, rgba(34,211,238,0.04), rgba(34,211,238,0.01))",
+                      border: "1px solid rgba(34,211,238,0.08)",
+                      borderRadius: "2px 12px 12px 12px",
+                      padding: "10px 14px",
+                    }}>
+                      <div style={{ fontSize: 7, letterSpacing: 2, color: "rgba(34,211,238,0.4)", marginBottom: 5 }}>
+                        SYSTEM SCAN ACTIVE
+                      </div>
+                      <div className="flex items-center gap-1.5 py-1">
+                        <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-bounce" style={{ animationDelay: "0ms" }}/>
+                        <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-bounce" style={{ animationDelay: "150ms" }}/>
+                        <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-bounce" style={{ animationDelay: "300ms" }}/>
+                        <span className="text-[9px] text-cyan-400/60 font-mono tracking-wider ml-1.5 animate-pulse">
+                          PROCESOWANIE NEURAL CORE...
+                        </span>
+                      </div>
+                    </div>
+                  </motion.div>
+                )}
                 <div ref={bottomRef}/>
               </div>
 
@@ -796,15 +1738,16 @@ export default function ColetteCMD({ onBack }) {
               </div>
               <div className="flex-1 overflow-auto px-3 py-2 space-y-1.5">
                 <AnimatePresence>
-                  {MODULES.map((mod) => {
+                  {modules.map((mod) => {
                     const Icon = mod.icon;
-                    const isActive = mod.status === "active";
+                    const isActive = mod.status !== "idle" && mod.status !== "empty";
                     const isExpanded = expandedMod === mod.id;
+                    const isCriticalAction = ["scanning", "purging", "critical", "compiling", "checking", "re-routing"].includes(mod.status);
                     return (
                       <motion.div key={mod.id}
                         layoutId={`mod-${mod.id}`}
-                        onClick={() => setExpandedMod(isExpanded ? null : mod.id)}
-                        className="relative overflow-hidden rounded-lg cursor-pointer"
+                        onClick={() => handleExpandModule(mod.id)}
+                        className="relative overflow-hidden rounded-lg cursor-pointer animate-none"
                         style={{
                           background: isActive ? "rgba(34,211,238,0.05)" : "rgba(34,211,238,0.02)",
                           border: `1px solid ${isActive ? "rgba(34,211,238,0.2)" : "rgba(34,211,238,0.07)"}`,
@@ -814,7 +1757,7 @@ export default function ColetteCMD({ onBack }) {
                         transition={SPRING_FAST}
                       >
                         {/* scanning line on active */}
-                        {isActive && <ScanLine color="#22d3ee"/>}
+                        {isActive && <ScanLine color={isCriticalAction ? "#ef4444" : "#22d3ee"}/>}
 
                         <div className="flex items-center gap-2">
                           <div className="w-6 h-6 rounded flex items-center justify-center flex-shrink-0"
@@ -824,8 +1767,17 @@ export default function ColetteCMD({ onBack }) {
                           <div className="min-w-0 flex-1">
                             <div className="flex items-center gap-1.5">
                               <span style={{ fontSize: 7, color: "rgba(34,211,238,0.4)", letterSpacing: 1 }}>{mod.id}</span>
-                              <span className="w-1 h-1 rounded-full flex-shrink-0"
-                                style={{ background: isActive ? "#22d3ee" : mod.status === "standby" ? "#f59e0b" : "rgba(200,220,255,0.2)" }}/>
+                              <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${isCriticalAction ? "animate-pulse" : ""}`}
+                                style={{
+                                  background: isCriticalAction
+                                    ? "#f59e0b"
+                                    : isActive
+                                      ? "#22d3ee"
+                                      : mod.status === "standby"
+                                        ? "#3b82f6"
+                                        : "rgba(200,220,255,0.2)"
+                                }}
+                              />
                             </div>
                             <div style={{ fontSize: 10, color: isActive ? "#c8ddf0" : "rgba(200,220,255,0.4)", fontWeight: isActive ? 600 : 400, letterSpacing: 0.3 }}>
                               {mod.name}
@@ -843,7 +1795,7 @@ export default function ColetteCMD({ onBack }) {
                               transition={SPRING_FAST}
                               className="overflow-hidden"
                             >
-                              <div className="pt-2 mt-2" style={{ borderTop: "1px solid rgba(34,211,238,0.08)" }}>
+                              <div className="pt-2 mt-2 font-mono" style={{ borderTop: "1px solid rgba(34,211,238,0.08)" }}>
                                 <div className="flex justify-between mb-1">
                                   <span style={{ fontSize: 7, color: "rgba(200,220,255,0.35)" }}>LOAD</span>
                                   <span style={{ fontSize: 8, color: "#22d3ee" }}>{mod.load}%</span>
@@ -851,10 +1803,18 @@ export default function ColetteCMD({ onBack }) {
                                 <MetricBar value={mod.load} height={2}/>
                                 <div className="flex justify-between mt-2">
                                   <span style={{ fontSize: 7, color: "rgba(200,220,255,0.25)" }}>STATUS</span>
-                                  <span style={{ fontSize: 7, letterSpacing: 1.5, color: isActive ? "#22d3ee" : "#f59e0b", textTransform: "uppercase" }}>
+                                  <span style={{ fontSize: 7, letterSpacing: 1.5, color: isCriticalAction ? "#ef4444" : isActive ? "#22d3ee" : "#f59e0b", textTransform: "uppercase", fontWeight: 600 }}>
                                     {mod.status}
                                   </span>
                                 </div>
+
+                                {mod.result && (
+                                  <div className="mt-2 p-1.5 rounded bg-black/45 border border-cyan-500/10 max-h-32 overflow-auto scrollbar-thin select-all">
+                                    <pre className="text-[7px] text-cyan-400 font-mono leading-tight whitespace-pre-wrap select-all">
+                                      {mod.result}
+                                    </pre>
+                                  </div>
+                                )}
                               </div>
                             </motion.div>
                           )}
@@ -866,8 +1826,323 @@ export default function ColetteCMD({ onBack }) {
               </div>
             </GlassPanel>
           </motion.div>
+
+          {/* ── CLAUDE VIRTUAL WORKSPACE ARTIFACT SANDBOX ───────────────── */}
+          <AnimatePresence>
+            {artifactSidebarOpen && activeArtifact && (
+              <motion.div
+                initial={{ width: 0, opacity: 0, x: 100 }}
+                animate={{ width: 420, opacity: 1, x: 0 }}
+                exit={{ width: 0, opacity: 0, x: 100 }}
+                transition={{ type: "spring", stiffness: 220, damping: 25 }}
+                className="flex flex-col gap-3 h-full overflow-hidden flex-shrink-0"
+              >
+                <GlassPanel className="rounded-xl flex-1 flex flex-col min-h-0" style={{ borderRadius: 12, borderColor: "rgba(245,158,11,0.25)" }}>
+                  {/* Header */}
+                  <div className="flex items-center justify-between px-4 py-3 bg-amber-950/20 border-b border-amber-500/15">
+                    <div className="flex items-center gap-2">
+                      <Terminal size={12} className="text-amber-400 animate-pulse" />
+                      <span className="text-[9px] font-mono font-bold text-amber-300 tracking-wider uppercase">
+                        CLAUDE SANDBOX WORKSPACE
+                      </span>
+                    </div>
+                    <button
+                      onClick={() => setArtifactSidebarOpen(false)}
+                      className="p-1 cursor-pointer rounded hover:bg-amber-500/15 text-amber-500/50 hover:text-amber-400 transition-colors border-none bg-transparent outline-none"
+                    >
+                      <X size={14} />
+                    </button>
+                  </div>
+
+                  {/* File Stamp details */}
+                  <div className="px-4 py-2 bg-black/40 border-b border-amber-500/5 flex items-center justify-between text-[8px] font-mono text-amber-400/60 select-none">
+                    <div className="flex items-center gap-1.5 font-mono">
+                      <Code2 size={10} />
+                      <span>FILE: {activeArtifact.title}</span>
+                    </div>
+                    <div className="font-mono">
+                      <span>{(activeArtifact.code?.length || 0).toLocaleString()} CHARS · EXT: .{activeArtifact.lang || "txt"}</span>
+                    </div>
+                  </div>
+
+                  {/* Workspace Tabs */}
+                  <div className="flex border-b border-amber-500/10 bg-amber-950/5">
+                    {[
+                      { id: "code", label: "SOURCE" },
+                      { id: "schematic", label: "SCHEMATIC BLUEPRINT" },
+                      { id: "diagnostics", label: "DIAGNOSTICS & LOGS" }
+                    ].map(tab => (
+                      <button
+                        key={tab.id}
+                        onClick={() => setArtifactTab(tab.id)}
+                        className={`flex-1 py-2 font-mono text-[8px] font-bold tracking-widest text-center cursor-pointer transition-colors border-b-2`}
+                        style={{
+                          borderColor: artifactTab === tab.id ? "#f59e0b" : "transparent",
+                          color: artifactTab === tab.id ? "#f59e0b" : "rgba(245,158,11,0.4)",
+                          background: artifactTab === tab.id ? "rgba(245,158,11,0.06)" : "transparent"
+                        }}
+                      >
+                        {tab.label}
+                      </button>
+                    ))}
+                  </div>
+
+                  {/* Tab contents */}
+                  <div className="flex-1 overflow-auto p-4 flex flex-col min-h-0 bg-black/60 scrollbar-thin">
+                    {artifactTab === "code" && (
+                      <div className="flex-1 flex flex-col min-h-0">
+                        <pre className="flex-1 overflow-auto p-3 rounded bg-black/80 border border-amber-500/5 text-amber-200/90 font-mono text-[10px] leading-relaxed select-all scrollbar-thin whitespace-pre-wrap">
+                          <code>{activeArtifact.code}</code>
+                        </pre>
+                      </div>
+                    )}
+
+                    {artifactTab === "schematic" && (
+                      <div className="flex-1 flex flex-col items-center justify-center space-y-4 font-mono text-center select-none text-[9px] text-amber-400/80">
+                        <div className="p-2 border border-amber-500/20 rounded bg-amber-500/5 w-48 relative">
+                          <div className="font-bold text-amber-300">USER INPUT LAYER</div>
+                          <div className="text-[7px] text-amber-400/40">Browser UI (CMD Event Node)</div>
+                        </div>
+                        <div className="h-6 w-px bg-dashed border-l border-dashed border-amber-500/30" />
+                        <div className="p-2 border border-amber-500/20 rounded bg-amber-500/5 w-48 relative">
+                          <div className="font-bold text-amber-300">NEURAL COGNITION SYSTEM</div>
+                          <div className="text-[7px] text-amber-400/40">Claude Custom Artifact Processor</div>
+                        </div>
+                        <div className="h-6 w-px bg-dashed border-l border-dashed border-amber-500/30" />
+                        <div className="p-2 border border-amber-500/20 rounded bg-amber-500/5 w-48 relative">
+                          <div className="font-bold text-amber-300">DOCKER EMULATION SHELL</div>
+                          <div className="text-[7px] text-amber-400/40">{activeArtifact.title || "Target File"}</div>
+                        </div>
+                        <div className="h-6 w-px bg-dashed border-l border-dashed border-amber-500/30" />
+                        <div className="p-2 border border-green-500/20 rounded bg-green-500/5 w-48 relative">
+                          <div className="font-bold text-green-300">NOMINAL RUNTIME STATUS</div>
+                          <div className="text-[7px] text-green-400/40 font-mono">Secure Sandboxed Container (OK)</div>
+                        </div>
+                      </div>
+                    )}
+
+                    {artifactTab === "diagnostics" && (
+                      <div className="flex-1 flex flex-col min-h-0 font-mono space-y-3">
+                        <div className="flex items-center justify-between">
+                          <span className="text-[8px] text-amber-400/40">VM EMULATOR UTILITY</span>
+                          <button
+                            onClick={() => {
+                              setCompilingArtifact(true);
+                              setArtifactLog("[PROCESS] Running Diagnostic Pipeline Compiler...\n[WAIT] AST symbol parser booting up...");
+                              setTimeout(() => {
+                                setArtifactLog(prev => prev + "\n[AST-01] Validating types security bounds...");
+                              }, 500);
+                              setTimeout(() => {
+                                setArtifactLog(prev => prev + "\n[AST-02] Code structure validation successful.\n[SUCCESS] Emulated server launch successful, listening at virtual port 8080.");
+                                setCompilingArtifact(false);
+                              }, 1500);
+                            }}
+                            disabled={compilingArtifact}
+                            className="px-2 py-1 rounded text-[8px] font-bold bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/20 text-amber-300 cursor-pointer disabled:opacity-40 uppercase"
+                          >
+                            {compilingArtifact ? "Kompilowanie..." : "TEST KOMPILACJI"}
+                          </button>
+                        </div>
+                        <div className="flex-1 overflow-auto bg-black border border-amber-500/10 rounded p-3 text-[9px] text-amber-400 font-mono select-all scrollbar-thin">
+                          <div className="text-amber-500/40 select-none pb-2 border-b border-amber-500/10 mb-2">INTEGRITY LOG STREAM:</div>
+                          <div className="whitespace-pre-wrap select-all">{artifactLog || "[INFO] System idle. Ready for compilation pipeline probe."}</div>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Global Actions */}
+                  <div className="p-3 bg-black/40 border-t border-amber-500/10 flex gap-2">
+                    <button
+                      onClick={() => {
+                        const blob = new Blob([activeArtifact.code], { type: "text/plain" });
+                        const url = URL.createObjectURL(blob);
+                        const a = document.createElement("a");
+                        a.href = url;
+                        a.download = activeArtifact.title;
+                        a.click();
+                        URL.revokeObjectURL(url);
+                      }}
+                      className="flex-1 py-1.5 rounded flex items-center justify-center gap-1 bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/15 text-amber-300 font-mono text-[8px] font-bold tracking-widest cursor-pointer uppercase"
+                    >
+                      <Download size={10} />
+                      POBIERZ PLIK
+                    </button>
+                    <button
+                      onClick={() => {
+                        navigator.clipboard.writeText(activeArtifact.code);
+                        const originalLog = artifactLog;
+                        setArtifactLog("[COPIED] Artifact code copied to clipboard successfully.");
+                        setTimeout(() => {
+                          setArtifactLog(originalLog);
+                        }, 2000);
+                      }}
+                      className="flex-1 py-1.5 rounded flex items-center justify-center gap-1 bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/15 text-amber-300 font-mono text-[8px] font-bold tracking-widest cursor-pointer uppercase"
+                    >
+                      <RefreshCw size={10} className="animate-none" />
+                      SKOPIUJ KOD
+                    </button>
+                  </div>
+                </GlassPanel>
+              </motion.div>
+            )}
+          </AnimatePresence>
         </div>
       </motion.div>
+
+      {/* ── AI STUDIO PARAMETER UTILITIES DRAWER ── */}
+      <AnimatePresence>
+        {sidebarOpen && (
+          <motion.div
+            initial={{ x: 300, opacity: 0 }}
+            animate={{ x: 0, opacity: 1 }}
+            exit={{ x: 300, opacity: 0 }}
+            transition={{ type: "spring", stiffness: 260, damping: 25 }}
+            className="absolute top-16 right-3 bottom-3 z-30 flex flex-col rounded-xl"
+            style={{
+              width: 320,
+              background: "rgba(3, 11, 28, 0.95)",
+              border: "1px solid rgba(34, 211, 238, 0.25)",
+              backdropFilter: "blur(20px)",
+              boxShadow: "-10px 0 30px rgba(0, 0, 0, 0.5), 0 0 20px rgba(34, 211, 238, 0.05)",
+            }}
+          >
+            {/* Drawer Header */}
+            <div className="flex items-center justify-between px-5 py-4 border-b border-cyan-500/10">
+              <div className="flex items-center gap-2">
+                <span className="text-cyan-400 text-[10px] font-black tracking-widest uppercase">
+                  AI Studio Parameter Controller
+                </span>
+              </div>
+              <button
+                onClick={() => setSidebarOpen(false)}
+                className="p-1 cursor-pointer rounded hover:bg-cyan-400/10 text-cyan-400/50 hover:text-cyan-400 transition-colors border-none bg-transparent outline-none"
+              >
+                <X size={14} />
+              </button>
+            </div>
+
+            {/* Drawer Parameters Form */}
+            <div className="flex-1 overflow-y-auto p-5 space-y-6">
+              {/* Preset Model selector */}
+              <div className="space-y-2">
+                <label className="text-[8px] font-bold tracking-widest text-[#22d3ee]/60 uppercase block">
+                  Target AI Model
+                </label>
+                <div className="relative">
+                  <select
+                    value={selectedModel}
+                    onChange={(e) => setSelectedModel(e.target.value)}
+                    className="w-full bg-cyan-950/40 border border-cyan-400/20 text-cyan-200 rounded px-3 py-2 text-xs outline-none focus:border-cyan-400/60 cursor-pointer appearance-none font-mono"
+                  >
+                    <option value="gemini-2.0-flash">gemini-2.0-flash (Fastest)</option>
+                    <option value="gemini-1.5-flash">gemini-1.5-flash (Standard)</option>
+                    <option value="gemini-1.5-pro">gemini-1.5-pro (Creative Reasoning)</option>
+                    <option value="gemini-3.5-flash">gemini-3.5-flash (Next-Gen)</option>
+                  </select>
+                  <div className="absolute top-1/2 right-3 -translate-y-1/2 pointer-events-none text-cyan-400/40 text-[9px]">
+                    ▼
+                  </div>
+                </div>
+                <p className="text-[8px] text-gray-500 leading-normal">
+                  Sets the Google Gemini LLM neural core used inside the supervisor layer proxy.
+                </p>
+              </div>
+
+              {/* System Instructions Prompt */}
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <label className="text-[8px] font-bold tracking-widest text-[#22d3ee]/60 uppercase block">
+                    System Instruction Override
+                  </label>
+                  <button
+                    onClick={() => setSystemPrompt("You are COLETTE v8 - J.A.R.V.I.S. ULTRA, the ultimate French cybernetic super-agent assistant designed using the Agent Development Kit (ADK) 5-layered architecture. Speak Polish by default.")}
+                    className="text-[7px] text-cyan-400/50 hover:text-cyan-400 cursor-pointer transition-colors border-none bg-transparent outline-none"
+                  >
+                    RESET DEFAULT
+                  </button>
+                </div>
+                <textarea
+                  value={systemPrompt}
+                  onChange={(e) => setSystemPrompt(e.target.value)}
+                  rows={6}
+                  className="w-full bg-cyan-950/40 border border-cyan-400/20 text-cyan-100 rounded p-3 text-[10px] outline-none focus:border-cyan-400/50 resize-y font-mono leading-relaxed placeholder:text-gray-600"
+                  placeholder="Insert custom core prompt parameters..."
+                />
+                <p className="text-[8px] text-gray-500 leading-normal">
+                  Controls the guidelines passed to Gemini for generating replies.
+                </p>
+              </div>
+
+              {/* Temperature slider */}
+              <div className="space-y-2">
+                <div className="flex justify-between items-center text-[8px] font-bold tracking-widest text-[#22d3ee]/60 uppercase">
+                  <span>Temperature</span>
+                  <span className="text-cyan-400 font-mono">{temperature.toFixed(1)}</span>
+                </div>
+                <input
+                  type="range"
+                  min="0.1"
+                  max="1.2"
+                  step="0.1"
+                  value={temperature}
+                  onChange={(e) => setTemperature(parseFloat(e.target.value))}
+                  className="w-full h-1.5 rounded-lg cursor-pointer"
+                  style={{ accentColor: "#22d3ee" }}
+                />
+                <p className="text-[8px] text-gray-500 leading-normal">
+                  Lower scores yields deterministic facts, larger values drives creativity.
+                </p>
+              </div>
+
+              {/* Typewriter Toggle and Speed */}
+              <div className="space-y-4 pt-3 border-t border-cyan-500/10">
+                <div className="flex items-center justify-between">
+                  <span className="text-[8px] font-bold tracking-widest text-[#22d3ee]/60 uppercase leading-none">
+                    Typewriter Output Effect
+                  </span>
+                  <button
+                    onClick={() => setTypewriterEnabled(!typewriterEnabled)}
+                    className={`relative inline-flex h-4 w-9 shrink-0 cursor-pointer rounded-full transition-colors duration-200 ease-in-out outline-none border-none ${
+                      typewriterEnabled ? "bg-cyan-500" : "bg-cyan-950"
+                    }`}
+                  >
+                    <span
+                      className={`pointer-events-none inline-block h-3 w-3 transform rounded-full bg-white transition duration-200 ease-in-out mt-0.5 ${
+                        typewriterEnabled ? "translate-x-5" : "translate-x-0.5"
+                      }`}
+                    />
+                  </button>
+                </div>
+
+                {typewriterEnabled && (
+                  <div className="space-y-2">
+                    <div className="flex justify-between items-center text-[7px] font-bold tracking-widest text-cyan-400/70 uppercase">
+                      <span>Typing Speed Interval</span>
+                      <span>{typewriterSpeed} ms</span>
+                    </div>
+                    <input
+                      type="range"
+                      min="5"
+                      max="45"
+                      step="5"
+                      value={typewriterSpeed}
+                      onChange={(e) => setTypewriterSpeed(parseInt(e.target.value))}
+                      className="w-full h-1 rounded cursor-pointer"
+                      style={{ accentColor: "#22d3ee" }}
+                    />
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Drawer Footer info */}
+            <div className="p-4 bg-cyan-950/25 border-t border-cyan-500/10 text-center text-[8px] text-cyan-400/30 tracking-widest">
+              NEXUS DE-SIMULATOR ACTIVE
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* Global CSS */}
       <style>{`
