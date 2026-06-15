@@ -1,6 +1,6 @@
 {
-  "name": "Colette Super Agent HUD",
-  "description": "Interactive command & control console for the Colette v8 Super Agent. Integrated with 5-layered Agent Dev Kit (ADK) architecture, real-time threat maps, sentiment operations skill, and custom subagents.",
+  "name": "Nexus Terminal Suite",
+  "description": "Unified Command Hub containing both J.A.R.V.I.S. Nexus v6.0 (Chat, secure proxy, metrics, SSH commands) and COLETTE Neural Core (automated supervisory console CLI dashboard with responsive SVG central orb).",
   "requestFramePermissions": ["camera", "microphone"],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

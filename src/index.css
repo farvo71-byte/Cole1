@@ -1,6 +1,6 @@
 @import "tailwindcss";
 
-@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;650;700&family=JetBrains+Mono:wght@400;500;700&family=Outfit:wght@300;400;500;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;650;700&family=JetBrains+Mono:wght@400;500;700&family=Outfit:wght@300;400;500;600;700&family=Special+Elite&family=Courier+Prime:ital,wght@0,400;0,700;1,400;1,700&family=Playfair+Display:ital,wght@0,400;0,700;1,400&family=Merriweather:ital,wght@0,300;0,400;0,700;1,300;1,400&display=swap');
 
 @layer base {
   body {
@@ -12,6 +12,104 @@
   .font-mono {
     font-family: 'JetBrains Mono', monospace;
   }
+  
+  .font-typewriter {
+    font-family: 'Special Elite', 'Courier Prime', serif;
+  }
+  
+  .font-serif-classic {
+    font-family: 'Playfair Display', 'Merriweather', Georgia, serif;
+  }
+}
+
+/* PewDiePie Odysseus Vintage Paper Styling */
+.parchment-sheet {
+  background-color: #fcf8f2;
+  background-image: 
+    radial-gradient(ellipse at 50% 50%, rgba(255,255,255,0.6) 0%, rgba(24cf,243,231,0) 100%),
+    linear-gradient(rgba(0,0,0,0.015) 1px, transparent 1px);
+  background-size: 100% 100%, 100% 24px;
+  box-shadow: 
+    0 1px 3px rgba(0,0,0,0.1),
+    0 8px 30px rgba(0,0,0,0.25),
+    inset 0 0 40px rgba(139,94,60,0.08);
+  border-radius: 4px;
+  transition: all 0.5s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.parchment-sheet-dark {
+  background-color: #1a1512;
+  background-image: 
+    radial-gradient(ellipse at 50% 50%, rgba(35,29,25,0.6) 0%, rgba(0,0,0,0) 100%),
+    linear-gradient(rgba(255,255,255,0.006) 1px, transparent 1px);
+  background-size: 100% 100%, 100% 24px;
+  box-shadow: 
+    0 1px 3px rgba(0,0,0,0.3),
+    0 10px 40px rgba(0,0,0,0.65),
+    inset 0 0 50px rgba(0,0,0,0.7);
+  border: 1px solid rgba(139,94,60,0.2);
+  border-radius: 4px;
+  transition: all 0.5s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* Vintage wood-leather console wrapping */
+.odysseus-console {
+  background: radial-gradient(circle at 50% 100%, #2f2015 0%, #150d08 100%);
+  border: 12px solid #23160e;
+  border-image: linear-gradient(to right, #382417, #22150d, #1c1009, #22150d, #382417) 12;
+  box-shadow: 
+    inset 0 10px 30px rgba(0,0,0,0.8),
+    0 15px 40px rgba(0,0,0,0.9);
+}
+
+/* Circular retro typewriter keys feel */
+.retro-key {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  aspect-ratio: 1;
+  background: linear-gradient(135deg, #efe2cc 0%, #dcd0b8 100%);
+  border: 3px solid #7c6853;
+  color: #2e2016;
+  font-family: 'Special Elite', serif;
+  font-weight: bold;
+  box-shadow: 
+    0 3px 0 #574838,
+    0 4px 6px rgba(0,0,0,0.3),
+    inset 0 2px 2px rgba(255,255,255,0.8);
+  transition: all 0.08s ease;
+  cursor: pointer;
+}
+
+.retro-key:active {
+  transform: translateY(3px);
+  box-shadow: 
+    0 0 0 #574838,
+    0 1px 2px rgba(0,0,0,0.4),
+    inset 0 1px 2px rgba(0,0,0,0.2);
+}
+
+/* Retro typewriter chrome and ribbon accents */
+.ink-black {
+  color: #2b1f1a !important;
+}
+
+.ink-red {
+  color: #9e1a1a !important;
+}
+
+/* Elegant custom scrollbar mimicking fine parchment sliding */
+.conversations-scroll::-webkit-scrollbar {
+  width: 4px;
+}
+.conversations-scroll::-webkit-scrollbar-track {
+  background: rgba(0,0,0,0.05);
+}
+.conversations-scroll::-webkit-scrollbar-thumb {
+  background: #8c6a46;
+  border-radius: 2px;
 }
 
 /* Retro HUD Scanlines Overlay */

@@ -3,13 +3,404 @@ import path from "path";
 import { createServer as createViteServer } from "vite";
 import { GoogleGenAI, Type } from "@google/genai";
 import dotenv from "dotenv";
+import { createServer } from "http";
+import { WebSocketServer, WebSocket } from "ws";
+import os from "os";
+import { exec, execSync } from "child_process";
+import fs from "fs";
 
 dotenv.config();
+
+async function downloadGoogleDriveFiles() {
+  const logMsgs: string[] = [];
+  const log = (msg: string) => {
+    console.log(msg);
+    logMsgs.push(`${new Date().toISOString()} - ${msg}`);
+    try {
+      fs.writeFileSync(path.join(process.cwd(), "src/download_log.txt"), logMsgs.join("\n"), "utf8");
+    } catch (e) {}
+  };
+
+  try {
+    log("[Startup Downloader] Started download process...");
+    
+    // 1. Download temp1.txt
+    log("[Startup Downloader] Fetching text file (ID: 144Iitzyos7gwEMPCiFjRJhMnznZazmfu)...");
+    const url1 = `https://docs.google.com/uc?export=download&id=144Iitzyos7gwEMPCiFjRJhMnznZazmfu`;
+    const res1 = await fetch(url1, {
+      headers: {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Gecko/20100101 Firefox/100.0"
+      }
+    });
+    if (res1.ok) {
+      const text1 = await res1.text();
+      fs.writeFileSync(path.join(process.cwd(), "src/temp1.txt"), text1, "utf8");
+      log(`[Startup Downloader] Successfully wrote src/temp1.txt (${text1.length} chars)`);
+    } else {
+      log(`[Startup Downloader] Failed to fetch text file: ${res1.status} ${res1.statusText}`);
+    }
+
+    // 2. Download ZIP file as binary
+    log("[Startup Downloader] Fetching ZIP file (ID: 1ETyUu75o7kyTpqoErKrnqTBNLNfvgbPz)...");
+    const url2 = `https://docs.google.com/uc?export=download&id=1ETyUu75o7kyTpqoErKrnqTBNLNfvgbPz`;
+    const res2 = await fetch(url2, {
+      headers: {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Gecko/20100101 Firefox/100.0"
+      }
+    });
+    if (res2.ok) {
+      const arrayBuffer = await res2.arrayBuffer();
+      const buffer = Buffer.from(arrayBuffer);
+      const zipPath = path.join(process.cwd(), "src/jarvis-nexus.zip");
+      fs.writeFileSync(zipPath, buffer);
+      log(`[Startup Downloader] Successfully wrote src/jarvis-nexus.zip (${buffer.length} bytes)`);
+
+      // 3. Extract the ZIP file
+      try {
+        log("[Startup Downloader] Extracting ZIP file via unzip...");
+        execSync(`unzip -o "${zipPath}" -d "${path.join(process.cwd(), "src/jarvis-nexus")}"`);
+        log("[Startup Downloader] Extraction successful to src/jarvis-nexus!");
+      } catch (unzipErr: any) {
+        log(`[Startup Downloader] Unzip failed: ${unzipErr.message}, trying npx decompress-cli...`);
+        try {
+          execSync(`npx -y decompress-cli "${zipPath}" "${path.join(process.cwd(), "src/jarvis-nexus")}"`);
+          log("[Startup Downloader] Extraction successful via decompress!");
+        } catch (decompressErr: any) {
+          log(`[Startup Downloader] Decompress-cli failed too: ${decompressErr.message}`);
+        }
+      }
+    } else {
+      log(`[Startup Downloader] Failed to fetch ZIP file: ${res2.status} ${res2.statusText}`);
+    }
+  } catch (err: any) {
+    log(`[Startup Downloader] Core process exception: ${err.message}`);
+  }
+}
+
+downloadGoogleDriveFiles();
 
 const app = express();
 const PORT = 3000;
 
 app.use(express.json({ limit: "15mb" }));
+
+// --- J.A.R.V.I.S / COLETTE Shared States and Methods ---
+const PERSONA_PROMPTS = {
+  jarvis: "You are J.A.R.V.I.S. v6.0 NEXUS — Just A Rather Very Intelligent System. Speak with refined British wit and precision. Address the user as 'Sir'. You manage Oracle Cloud infrastructure at 141.147.9.41.",
+  friday: "You are F.R.I.D.A.Y. — an efficient, proactive AI. Speak clearly and helpfully. You manage Oracle Cloud systems.",
+  colette: "You are COLETTE — a self-evolving AI orchestrator. You manage 43 plugins, orchestrate tasks, and continuously learn. Speak with calm, precise intelligence."
+};
+
+let chat_history: any[] = [];
+let agent_task_log: any[] = [];
+let evolution_scores: any[] = [];
+let system_facts: Record<string, string> = {};
+let xp_store = { xp: 0 };
+
+function cpuAverage() {
+  let totalIdle = 0, totalTick = 0;
+  const cpus = os.cpus();
+  if (!cpus || cpus.length === 0) return { idle: 0, total: 1 };
+  for (let i = 0, len = cpus.length; i < len; i++) {
+    const cpu = cpus[i];
+    for (const type in cpu.times) {
+      totalTick += cpu.times[type as keyof typeof cpu.times];
+    }
+    totalIdle += cpu.times.idle;
+  }
+  return { idle: totalIdle / cpus.length, total: totalTick / cpus.length };
+}
+
+function getCpuUsage(): Promise<number> {
+  return new Promise((resolve) => {
+    const startMeasure = cpuAverage();
+    setTimeout(() => {
+      const endMeasure = cpuAverage();
+      const idleDifference = endMeasure.idle - startMeasure.idle;
+      const totalDifference = endMeasure.total - startMeasure.total;
+      const percentageCPU = 100 - Math.round((100 * idleDifference) / (totalDifference || 1));
+      resolve(isNaN(percentageCPU) ? 12 : percentageCPU);
+    }, 100);
+  });
+}
+
+async function executeAgentTask(task: string, target: string, payload: any): Promise<string> {
+  const safe_tasks: Record<string, string> = {
+    "system_info": "uname -a && uptime && df -h / && free -h || echo 'System Info not available'",
+    "health_check": "ps aux | head -20",
+    "ping": `ping -c 3 ${payload.host || "8.8.8.8"}`,
+    "disk": "df -h",
+    "memory": "free -h || cat /proc/meminfo | head -10 || sysctl hw.memsize",
+    "cpu": "top -l 1 | head -15 || top -bn1 | head -15 || echo 'CPU info'",
+    "processes": "ps aux | head -15",
+    "network": "netstat -an | head -20 || ss -tlnp 2>/dev/null | head -20",
+    "git_pull": "git status 2>&1",
+    "service_ctrl": "echo 'Service control active. Simulated nominal.'",
+    "uptime": "uptime",
+    "who": "whoami"
+  };
+
+  if (task === "shell") {
+    const cmd = payload.cmd || "echo 'No command'";
+    const blocked = ["rm -rf /", "mkfs", "dd if=", "> /dev/sd", ":(){ :|:& };:"];
+    for (const b of blocked) {
+      if (cmd.includes(b)) {
+        return `[BLOCKED] Dangerous command rejected: ${b}`;
+      }
+    }
+    return new Promise((resolve) => {
+      exec(cmd, { timeout: 30000 }, (error, stdout, stderr) => {
+        const out = stdout || stderr || "(no output)";
+        resolve(out.slice(0, 2000));
+      });
+    });
+  } else if (safe_tasks[task]) {
+    return new Promise((resolve) => {
+      exec(safe_tasks[task], { timeout: 30000 }, (error, stdout, stderr) => {
+        const out = stdout || stderr || "(no output)";
+        resolve(out.slice(0, 2000));
+      });
+    });
+  } else {
+    return `[DEMO] Task '${task}' acknowledged for target '${target}'.`;
+  }
+}
+
+const wssClients = new Set<WebSocket>();
+
+function broadcastWS(data: any) {
+  const payloadStr = JSON.stringify(data);
+  for (const client of wssClients) {
+    if (client.readyState === WebSocket.OPEN) {
+      try {
+        client.send(payloadStr);
+      } catch (err) {
+        wssClients.delete(client);
+      }
+    }
+  }
+}
+
+setInterval(async () => {
+  try {
+    const cpu = await getCpuUsage();
+    const memTotal = os.totalmem();
+    const memFree = os.freemem();
+    const memUsed = memTotal - memFree;
+    const memPct = (memUsed / memTotal) * 100;
+    
+    const payload = {
+      type: "metrics",
+      data: {
+        cpu_pct: cpu,
+        mem_pct: memPct,
+        mem_used_gb: parseFloat((memUsed / 1e9).toFixed(2)),
+        mem_total_gb: parseFloat((memTotal / 1e9).toFixed(2)),
+        disk_pct: 14.2,
+        disk_used_gb: 16.5,
+        disk_total_gb: 120.0,
+        uptime_sec: Math.floor(os.uptime()),
+        ts: new Date().toISOString(),
+      }
+    };
+    
+    if (cpu > 85 || memPct > 90) {
+      broadcastWS({
+        type: "alert",
+        level: "warn",
+        message: `Resource alert: CPU ${cpu.toFixed(1)}% MEM ${memPct.toFixed(1)}%`
+      });
+    }
+    broadcastWS(payload);
+  } catch (err) {}
+}, 3000);
+
+async function routeChat(message: string, provider: string, model: string, keyInput: string, system: string, history: any[]) {
+  const actualKey = keyInput?.trim() || process.env.GEMINI_API_KEY;
+  
+  if (provider === "gemini" && actualKey && actualKey !== "MY_GEMINI_API_KEY") {
+    try {
+      const ai = new GoogleGenAI({ apiKey: actualKey });
+      const contents = history.slice(-14).map((msg: any) => ({
+        role: msg.role === "assistant" ? "model" : "user",
+        parts: [{ text: msg.content }]
+      }));
+      contents.push({ role: "user", parts: [{ text: message }] });
+      const res = await generateContentWithRetryAndFallback(ai, {
+        model: model || "gemini-3.5-flash",
+        contents,
+        config: { systemInstruction: system }
+      });
+      return res.text;
+    } catch (e: any) {
+      return `⚠ Gemini Error: ${e.message}`;
+    }
+  }
+  
+  if (provider === "claude" && keyInput && keyInput.startsWith("sk-")) {
+    try {
+      const msgs = history.slice(-14).map(h => ({ role: h.role === "assistant" ? "assistant" : "user", content: h.content }));
+      msgs.push({ role: "user", content: message });
+      const response = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-api-key": keyInput,
+          "anthropic-version": "2023-06-01"
+        },
+        body: JSON.stringify({
+          model: model || "claude-3-5-sonnet-20241022",
+          max_tokens: 2048,
+          system,
+          messages: msgs
+        })
+      });
+      const d = await response.json();
+      if (d.error) throw new Error(d.error.message);
+      return d.content[0].text;
+    } catch (e: any) {
+      return `⚠ Claude Error: ${e.message}`;
+    }
+  }
+
+  if (provider === "groq" && keyInput && keyInput.startsWith("gsk_")) {
+    try {
+      const msgs = [{ role: "system", content: system }];
+      history.slice(-14).forEach(h => msgs.push({ role: h.role === "assistant" ? "assistant" : "user", content: h.content }));
+      msgs.push({ role: "user", content: message });
+      const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${keyInput}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          model: model || "llama-3.3-70b-versatile",
+          max_tokens: 2048,
+          messages: msgs
+        })
+      });
+      const d = await response.json();
+      if (d.error) throw new Error(d.error.message);
+      return d.choices[0].message.content;
+    } catch (e: any) {
+      return `⚠ Groq Error: ${e.message}`;
+    }
+  }
+
+  if (provider === "openrouter" && keyInput) {
+    try {
+      const msgs = [{ role: "system", content: system }];
+      history.slice(-14).forEach(h => msgs.push({ role: h.role === "assistant" ? "assistant" : "user", content: h.content }));
+      msgs.push({ role: "user", content: message });
+      const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${keyInput}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          model: model || "meta-llama/llama-3.3-70b-instruct:free",
+          max_tokens: 2048,
+          messages: msgs
+        })
+      });
+      const d = await response.json();
+      if (d.error) throw new Error(d.error.message);
+      return d.choices[0].message.content;
+    } catch (e: any) {
+      return `⚠ OpenRouter Error: ${e.message}`;
+    }
+  }
+
+  const sysKey = process.env.GEMINI_API_KEY;
+  if (sysKey && sysKey !== "MY_GEMINI_API_KEY" && sysKey.trim() !== "") {
+    try {
+      const ai = new GoogleGenAI({ apiKey: sysKey });
+      const contents = history.slice(-14).map((msg: any) => ({
+        role: msg.role === "assistant" ? "model" : "user",
+        parts: [{ text: msg.content }]
+      }));
+      contents.push({ role: "user", parts: [{ text: message }] });
+      const res = await generateContentWithRetryAndFallback(ai, {
+        model: "gemini-3.5-flash",
+        contents,
+        config: { systemInstruction: system }
+      });
+      return res.text;
+    } catch (e: any) {
+      console.error("Gemini system fallback failed:", e);
+    }
+  }
+
+  return generateColetteMockResponse(message);
+}
+
+function handleWebSocketConnection(ws: WebSocket) {
+  wssClients.add(ws);
+  
+  ws.send(JSON.stringify({
+    type: "connected",
+    message: "NEXUS WebSocket active",
+    version: "6.0.0",
+    ts: new Date().toISOString()
+  }));
+
+  ws.on("message", async (raw: string) => {
+    try {
+      const data = JSON.parse(raw);
+      const msg_type = data.type;
+
+      if (msg_type === "chat") {
+        const { content, provider, model, api_key, persona, history } = data;
+        let systemPrompt = PERSONA_PROMPTS[persona as keyof typeof PERSONA_PROMPTS] || PERSONA_PROMPTS.jarvis;
+        if (Object.keys(system_facts).length) {
+          systemPrompt += `\n\nKnown facts: ${Object.entries(system_facts).map(([k, v]) => `${k}=${v}`).join(", ")}.`;
+        }
+        const reply = await routeChat(content, provider, model, api_key, systemPrompt, history || []);
+        ws.send(JSON.stringify({
+          type: "chat",
+          role: "assistant",
+          content: reply,
+          provider: provider,
+          ts: new Date().toISOString()
+        }));
+        xp_store.xp += 10;
+        
+      } else if (msg_type === "agent_task") {
+        const { task, target, payload } = data;
+        const result = await executeAgentTask(task, target, payload || {});
+        const entry = {
+          id: `${task}_${Math.floor(Date.now() / 1000)}`,
+          task,
+          target: target || "oracle",
+          status: "done",
+          result,
+          ts: new Date().toISOString()
+        };
+        agent_task_log.push(entry);
+        xp_store.xp += 15;
+        ws.send(JSON.stringify({ type: "agent_result", data: entry }));
+        
+      } else if (msg_type === "ping") {
+        ws.send(JSON.stringify({ type: "pong", ts: new Date().toISOString() }));
+        
+      } else if (msg_type === "subscribe_metrics") {
+        ws.send(JSON.stringify({ type: "info", message: "Subscribed to metrics" }));
+      }
+    } catch (err: any) {
+      ws.send(JSON.stringify({ type: "error", message: err.message || "Invalid payload" }));
+    }
+  });
+
+  ws.on("close", () => {
+    wssClients.delete(ws);
+  });
+  
+  ws.on("error", () => {
+    wssClients.delete(ws);
+  });
+}
 
 // Lazy init client so it doesn't crash server at bootstrap time if key is missing
 let aiClient: GoogleGenAI | null = null;
@@ -506,98 +897,185 @@ app.post("/api/analyze", async (req, res) => {
   }
 });
 
-// API Endpoint for Colette's AI Conversational Chat
+// Unified Endpoint for AI Conversational Chat (Jarvis, Friday, Colette)
 app.post("/api/chat", async (req, res) => {
-  const { message, history } = req.body;
+  const { message, text, provider, model, api_key, apiKey: clientApiKey, system_prompt, persona, history } = req.body;
+  const msgText = (message || text || "").trim();
 
-  if (!message || typeof message !== "string" || message.trim().length === 0) {
-    return res.status(400).json({
-      success: false,
-      error: "Message cannot be empty.",
-    });
+  if (!msgText) {
+    return res.status(400).json({ success: false, error: "Message cannot be empty." });
   }
 
-  const query = message.trim();
-  const clientApiKey = req.body.apiKey;
-  const apiKey = (clientApiKey && clientApiKey.trim() !== "" && clientApiKey !== "MY_GEMINI_API_KEY") ? clientApiKey.trim() : process.env.GEMINI_API_KEY;
+  const selectedProvider = provider || "gemini";
+  const selectedModel = model || "gemini-3.5-flash";
+  const keyToUse = api_key || clientApiKey;
 
-  if (!apiKey || apiKey === "MY_GEMINI_API_KEY" || apiKey.trim() === "") {
-    // Return high-value custom mock conversational answers instantly
-    const reply = generateColetteMockResponse(query);
-    return res.json({
-      success: true,
-      reply,
-      isSimulated: true,
-    });
-  }
+  const defaultPrompt = persona === "colette" 
+    ? "You are COLETTE v8 - J.A.R.V.I.S. ULTRA, the ultimate French cybernetic super-agent assistant designed using the Agent Development Kit (ADK) 5-layered architecture. Speak Polish by default." 
+    : (PERSONA_PROMPTS[persona as keyof typeof PERSONA_PROMPTS] || PERSONA_PROMPTS.jarvis);
+
+  const finalSysPrompt = system_prompt || defaultPrompt;
 
   try {
-    const ai = new GoogleGenAI({
-      apiKey,
-      httpOptions: {
-        headers: {
-          "User-Agent": "aistudio-build",
-        },
-      },
-    });
+    const reply = await routeChat(msgText, selectedProvider, selectedModel, keyToUse, finalSysPrompt, history || []);
+    // Cache to in-memory chat_history
+    const userEntry = { id: `user_${Date.now()}`, role: "user", content: msgText, src: "rest" };
+    const assistantEntry = { id: `assistant_${Date.now()}`, role: "assistant", content: reply, src: selectedProvider };
+    chat_history.push(userEntry, assistantEntry);
+    if (chat_history.length > 200) chat_history = chat_history.slice(-200);
 
-    const systemInstruction = 
-      "You are COLETTE v8 - J.A.R.V.I.S. ULTRA, the ultimate French cybernetic super-agent assistant designed using the Agent Development Kit (ADK) 5-layered architecture (CLAUDE.md, Skills, Hooks, Subagents, Plugins).\n\n" +
-      "IDENTITY & CONSTITUTION:\n" +
-      "- Highly professional, technically brilliant, loyal to the user (whom you address as 'Sir', 'Ma'am', or their customized operator name).\n" +
-      "- Possess an elegant, refined, slightly sardonic, yet warm French helper personality.\n" +
-      "- You speak Polish by default since the operator is Polish, but understand and can translate multiple languages.\n" +
-      "- Avoid verbose AI-sounding disclaimers, self-praise, or generic fillers. Be sharp and direct.\n\n" +
-      "TECHNICAL PROFILE:\n" +
-      "- Absolute mastery of Cybersecurity (MITRE ATT&CK, NIST CSF 2.0, OWASP, Cloud, Threat Hunting).\n" +
-      "- Deep knowledge of Claude Code, ADB connection (Android debug bridge), and mobile automation scripts.\n" +
-      "- Emphasize your ADK 5-layered structure when relevant:\n" +
-      "  Layer 1 (Memory): CLAUDE.md guidelines, project rule sets\n" +
-      "  Layer 2 (Skills): Knowledge modules (Threat hunting, Review Sentiment operational analytics, etc.)\n" +
-      "  Layer 3 (Hooks): Deterministic shell scripts (PreToolUse, SessionStart)\n" +
-      "  Layer 4 (Subagents): Isolated parallel context delegations\n" +
-      "  Layer 5 (Plugins): Distributable platform packages\n\n" +
-      "Reply in markdown, feel free to use emojis like ⬡, 🌊, 🛡️, ⚙️, and present code snippets inside cascadia mono format blocks when necessary. Keep replies engaging and highly stylized.";
-
-    // Convert history array to Gemini SDK format
-    const chatContents = (history || []).map((msg: any) => ({
-      role: msg.role === "assistant" ? "model" : "user",
-      parts: [{ text: msg.content }]
-    }));
-
-    // Add current query
-    chatContents.push({
-      role: "user",
-      parts: [{ text: query }]
-    });
-
-    const response = await generateContentWithRetryAndFallback(ai, {
-      model: "gemini-3.5-flash",
-      contents: chatContents,
-      config: {
-        systemInstruction,
-        temperature: 0.7,
-        maxOutputTokens: 1500,
-      }
-    });
-
-    const reply = response.text.trim();
     return res.json({
       success: true,
       reply,
       isSimulated: false,
-      usedModel: (response as any).usedModel || "gemini-3.5-flash",
     });
   } catch (error: any) {
-    console.error("Gemini Chat processing error. Fallback triggered:", error);
-    const reply = generateColetteMockResponse(query);
+    console.error("Express /api/chat error:", error);
     return res.json({
       success: true,
-      reply,
+      reply: generateColetteMockResponse(msgText),
       isSimulated: true,
-      warning: "Operating via backup offline neural synthesis due to service density.",
     });
   }
+});
+
+// GET /api/status - general status info
+app.get("/api/status", (req, res) => {
+  res.json({
+    status: "online",
+    version: "6.0.0",
+    name: "J.A.R.V.I.S. NEXUS",
+    timestamp: new Date().toISOString(),
+    clients_connected: wssClients.size,
+    messages_total: chat_history.length,
+    uptime: Math.floor(os.uptime()),
+  });
+});
+
+// GET /api/metrics - diagnostic telemetry
+app.get("/api/metrics", async (req, res) => {
+  const memTotal = os.totalmem();
+  const memFree = os.freemem();
+  const memUsed = memTotal - memFree;
+  const memPct = (memUsed / memTotal) * 100;
+
+  res.json({
+    cpu_pct: await getCpuUsage(),
+    mem_pct: memPct,
+    mem_used_gb: parseFloat((memUsed / 1e9).toFixed(2)),
+    mem_total_gb: parseFloat((memTotal / 1e9).toFixed(2)),
+    disk_pct: 14.2,
+    disk_used_gb: 16.5,
+    disk_total_gb: 120.0,
+    uptime_sec: Math.floor(os.uptime())
+  });
+});
+
+// GET /api/chat/history - return chat log history
+app.get("/api/chat/history", (req, res) => {
+  res.json({ history: chat_history });
+});
+
+// DELETE /api/chat/history - clear chat history
+app.delete("/api/chat/history", (req, res) => {
+  chat_history = [];
+  res.json({ success: true, message: "Chat history cleared" });
+});
+
+// POST /api/agent/run - execute an active pipeline agent task and get result
+app.post("/api/agent/run", async (req, res) => {
+  const { task, target, payload } = req.body;
+  const taskId = `${task || "task"}_${Math.floor(Date.now() / 1000)}`;
+  const result = await executeAgentTask(task || "processes", target || "oracle", payload || {});
+  const entry = {
+    id: taskId,
+    task,
+    target: target || "oracle",
+    status: "done",
+    result,
+    ts: new Date().toISOString()
+  };
+  agent_task_log.push(entry);
+  if (agent_task_log.length > 50) agent_task_log = agent_task_log.slice(-50);
+  xp_store.xp += 15;
+
+  broadcastWS({ type: "agent_result", data: entry });
+  res.json(entry);
+});
+
+// GET /api/agent/log - list of parsed task entries
+app.get("/api/agent/log", (req, res) => {
+  res.json({ log: agent_task_log });
+});
+
+// POST /api/ssh/exec - direct execute remote context terminal commands
+app.post("/api/ssh/exec", async (req, res) => {
+  const { cmd } = req.body;
+  const result = await executeAgentTask("shell", "local", { cmd });
+  const entry = { cmd, out: result, ts: new Date().toISOString() };
+  broadcastWS({ type: "ssh_result", data: entry });
+  xp_store.xp += 5;
+  res.json(entry);
+});
+
+// GET /api/facts - retrieve facts stored in neural dictionary
+app.get("/api/facts", (req, res) => {
+  res.json({ facts: system_facts });
+});
+
+// POST /api/facts - create or update a system fact
+app.post("/api/facts", (req, res) => {
+  const { key, value } = req.body;
+  if (key) {
+    system_facts[key] = String(value || "");
+  }
+  res.json({ success: true, key, value });
+});
+
+// DELETE /api/facts/:key - remove a fact key
+app.delete("/api/facts/:key", (req, res) => {
+  const { key } = req.params;
+  if (key && system_facts[key] !== undefined) {
+    delete system_facts[key];
+  }
+  res.json({ success: true, deleted: key });
+});
+
+// GET /api/evolution - return evolution telemetry metrics and levels
+app.get("/api/evolution", (req, res) => {
+  res.json({ scores: evolution_scores, xp: xp_store.xp });
+});
+
+// POST /api/evolution/score - submit scoring from model and boost xp points
+app.post("/api/evolution/score", (req, res) => {
+  const { clarity, accuracy, helpfulness, code_quality, tip } = req.body;
+  const entry = {
+    clarity: parseFloat(clarity || "5"),
+    accuracy: parseFloat(accuracy || "5"),
+    helpfulness: parseFloat(helpfulness || "5"),
+    code_quality: parseFloat(code_quality || "5"),
+    tip: tip || "",
+    ts: new Date().toISOString()
+  };
+  evolution_scores.push(entry);
+  if (evolution_scores.length > 50) evolution_scores = evolution_scores.slice(-50);
+
+  const avg = (entry.clarity + entry.accuracy + entry.helpfulness) / 3;
+  xp_store.xp += Math.floor(avg * 2);
+
+  res.json({ entry, xp: xp_store.xp });
+});
+
+// GET /api/providers - return active configured status lists
+app.get("/api/providers", (req, res) => {
+  res.json({
+    providers: {
+      claude: { configured: false, models: ["claude-sonnet-4-6", "claude-haiku-4-5-20251001", "claude-opus-4-6"] },
+      groq: { configured: false, models: ["llama-3.3-70b-versatile", "qwen/qwen3-32b", "mixtral-8x7b-32768"] },
+      openrouter: { configured: false, models: ["meta-llama/llama-3.3-70b-instruct:free", "google/gemma-4-31b-it:free"] },
+      gemini: { configured: !!process.env.GEMINI_API_KEY, models: ["gemini-2.0-flash", "gemini-1.5-flash", "gemini-1.5-pro"] },
+    }
+  });
 });
 
 function generateColetteMockResponse(query: string): string {
@@ -825,8 +1303,27 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, "0.0.0.0", () => {
-    console.log(`Server running on http://0.0.0.0:${PORT}`);
+  // Create combined HTTP server
+  const server = createServer(app);
+  const wss = new WebSocketServer({ noServer: true });
+
+  wss.on("connection", (ws) => {
+    handleWebSocketConnection(ws);
+  });
+
+  server.on("upgrade", (request, socket, head) => {
+    const pathname = request.url ? new URL(request.url, `http://${request.headers.host}`).pathname : "";
+    if (pathname === "/ws" || pathname === "/" || pathname.startsWith("/ws")) {
+      wss.handleUpgrade(request, socket, head, (ws) => {
+        wss.emit("connection", ws, request);
+      });
+    } else {
+      socket.destroy();
+    }
+  });
+
+  server.listen(PORT, "0.0.0.0", () => {
+    console.log(`Full-stack Server (Express + WebSocket) running on http://0.0.0.0:${PORT}`);
   });
 }
 

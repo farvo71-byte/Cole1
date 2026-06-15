@@ -1,0 +1,7 @@
+{
+  "name": "node-domexception",
+  "version": "1.0.0",
+  "description": "Native DOMException bridge to resolve registry deprecation warnings",
+  "main": "index.js",
+  "private": true
+}
