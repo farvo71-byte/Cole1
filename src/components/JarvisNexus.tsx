@@ -418,7 +418,7 @@ export default function JarvisNexus({ onBack }) {
   // ════════════════════════════════════════════════════════════════════
   return (
     <div style={{display:"flex",height:"100vh",width:"100vw",
-      background:"#020810",fontFamily:"'JetBrains Mono',monospace",
+      background:"rgba(2, 8, 16, 0.35)",backdropFilter:"blur(8px)",fontFamily:"'JetBrains Mono',monospace",
       color:"#c8ddf0",overflow:"hidden",position:"relative"}}>
 
       <style>{`

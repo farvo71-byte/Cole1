@@ -1,6 +1,9 @@
 // @ts-nocheck
 import { useState, useEffect, useRef, useCallback } from "react";
 import { ProxyPanel } from "./ProxyPanel";
+import { EvoPanel } from "./EvoPanel";
+import { MemoryPanel } from "./MemoryPanel";
+import { AgentPanel } from "./AgentPanel";
 import { motion, AnimatePresence, useSpring, useMotionValue } from "framer-motion";
 import {
   Cpu, Zap, Radio, Search, Send, Mic, Terminal, Activity,
@@ -643,6 +646,17 @@ function GlassPanel({ children, className = "", style = {}, animate, initial, tr
 // AGENT MULTI-MODEL CUSTOM THEMES
 // ═══════════════════════════════════════════════════
 const AGENT_THEMES = {
+  odysseus: {
+    primary: "#9cdef2", // Cyan base
+    accent: "#c678dd",  // Magenta highlight
+    border: "rgba(156,222,242,0.12)",
+    bg: "rgba(40,44,52,0.95)", // #282c34 one dark bg
+    text: "text-[#9cdef2]",
+    textLight: "text-white",
+    glow: "rgba(198,120,221,0.3)",
+    title: "ODYSSEUS HUB",
+    desc: "Central System Assistant"
+  },
   colette: {
     primary: "#22d3ee", // Cyan
     accent: "#3b82f6", // Blue
@@ -717,7 +731,7 @@ const AGENT_THEMES = {
 
 export default function ColetteCMD({ onBack }) {
   const metrics  = useSystemMetrics();
-  const [selectedAgent, setSelectedAgent] = useState("colette");
+  const [selectedAgent, setSelectedAgent] = useState("odysseus");
   const curTheme = AGENT_THEMES[selectedAgent] || AGENT_THEMES.colette;
   const [messages, setMessages] = useState(INIT_MESSAGES);
   const [input,    setInput]    = useState("");
@@ -761,6 +775,8 @@ export default function ColetteCMD({ onBack }) {
   const [compilingArtifact, setCompilingArtifact] = useState(false);
   const [artifactLog, setArtifactLog] = useState("");
   const [omniActiveTab, setOmniActiveTab] = useState("colette"); // "colette" | "jarvis" | "friday" | "gemini" | "claude" | "hackerai"
+  const [chatWindowOpen, setChatWindowOpen] = useState(false);
+  const [fullChatModel, setFullChatModel] = useState("gemini-2.0-flash");
 
   // Hacker AI state
   const [hackerThreatSweepActive, setHackerThreatSweepActive] = useState(false);
@@ -775,14 +791,48 @@ export default function ColetteCMD({ onBack }) {
     setArtifactLog(`[SYSTEM] Loaded artifacts: ${art.title} in isolation container. Code size: ${art.code.length} characters.`);
   }, []);
 
+  const [subagentsTrayOpen, setSubagentsTrayOpen] = useState(false);
   const [modules, setModules] = useState([
-    { id: "MOD-01", name: "Nexus Scanner",  icon: Network,  status: "active",  load: 12 },
-    { id: "MOD-02", name: "Threat Matrix",  icon: Shield,   status: "active",  load: 8 },
-    { id: "MOD-03", name: "Code Weaver",    icon: Code2,    status: "idle",    load: 0  },
-    { id: "MOD-04", name: "Memory Vault",   icon: Database, status: "idle",    load: 4 },
-    { id: "MOD-05", name: "Git Synapse",    icon: GitBranch,status: "standby", load: 2  },
-    { id: "MOD-06", name: "Layer Protocol", icon: Layers,   status: "active",  load: 35 },
+    { id: "MOD-01", name: "Nexus Scanner",  icon: Network,  status: "active",  load: 12, enabled: true },
+    { id: "MOD-02", name: "Threat Matrix",  icon: Shield,   status: "active",  load: 8, enabled: true },
+    { id: "MOD-03", name: "Code Weaver",    icon: Code2,    status: "idle",    load: 0, enabled: true },
+    { id: "MOD-04", name: "Memory Vault",   icon: Database, status: "idle",    load: 4, enabled: true },
+    { id: "MOD-05", name: "Git Synapse",    icon: GitBranch,status: "standby", load: 2, enabled: true },
+    { id: "MOD-06", name: "Layer Protocol", icon: Layers,   status: "active",  load: 35, enabled: true },
+    { id: "MOD-07", name: "Neural Link",    icon: Zap,      status: "active",  load: 48, enabled: true },
+    { id: "MOD-08", name: "Threat Parser",  icon: Crosshair,status: "active",  load: 22, enabled: true },
   ]);
+
+  const toggleModule = (modId) => {
+    setModules(prev => prev.map(m => {
+      if (m.id === modId) {
+        const nextEnabled = m.enabled !== false ? false : true;
+        
+        // Add a nice system feedback log in messages!
+        const logId = Date.now() + Math.floor(Math.random() * 1000);
+        const logText = nextEnabled 
+          ? `[SUBAGENT MATRIX] Włączono moduł subagenta ${m.name} (${m.id}). Alokacja zasobów podniesiona. Synchronizacja w toku...`
+          : `[SUBAGENT MATRIX] Deaktywowano moduł subagenta ${m.name} (${m.id}). Tryb spoczynku (Offline) aktywny.`;
+        
+        setMessages(curr => [
+          ...curr,
+          { id: logId, role: "system", text: logText }
+        ]);
+
+        // Intermittent presence orb response log
+        setOrbState("speaking");
+        setTimeout(() => setOrbState("idle"), 1200);
+
+        return {
+          ...m,
+          enabled: nextEnabled,
+          load: nextEnabled ? 15 : 0,
+          status: nextEnabled ? "standby" : "offline"
+        };
+      }
+      return m;
+    }));
+  };
 
   // Sync agents with prompt guidelines
   useEffect(() => {
@@ -807,6 +857,13 @@ export default function ColetteCMD({ onBack }) {
   // Dynamically update modules load as real-time system metrics fluctuate
   useEffect(() => {
     setModules(prev => prev.map(mod => {
+      if (mod.enabled === false) {
+        return {
+          ...mod,
+          load: 0,
+          status: "offline"
+        };
+      }
       if (["scanning", "purging", "critical", "compiling", "re-routing", "checking", "locked-in"].includes(mod.status)) {
         return mod;
       }
@@ -816,6 +873,8 @@ export default function ColetteCMD({ onBack }) {
       else if (mod.id === "MOD-02") nextLoad = Math.max(5, Math.min(95, Math.round(metrics.latency / 4 + Math.random() * 3)));
       else if (mod.id === "MOD-04") nextLoad = Math.max(2, Math.min(80, Math.round(messages.length * 4)));
       else if (mod.id === "MOD-06") nextLoad = Math.max(10, Math.min(95, Math.round(metrics.memory * 0.7 + Math.random() * 4)));
+      else if (mod.id === "MOD-07") nextLoad = Math.max(15, Math.min(95, Math.round(metrics.cpu * 0.6 + Math.random() * 4)));
+      else if (mod.id === "MOD-08") nextLoad = Math.max(10, Math.min(90, Math.round(metrics.latency * 1.5 + Math.random() * 5)));
       
       return {
         ...mod,
@@ -898,7 +957,7 @@ export default function ColetteCMD({ onBack }) {
         body: JSON.stringify({
           message: groundedMessage,
           persona: selectedAgent,
-          model: selectedModel,
+          model: chatWindowOpen ? fullChatModel : selectedModel,
           system_prompt: systemPrompt,
           history: historyPayload
         })
@@ -1020,7 +1079,7 @@ export default function ColetteCMD({ onBack }) {
   return (
     <div
       className="relative w-screen h-screen overflow-hidden flex flex-col select-none"
-      style={{ background: "#020617", fontFamily: "'JetBrains Mono', 'Fira Code', monospace", color: "#e2e8f0" }}
+      style={{ background: "rgba(2, 6, 23, 0.35)", backdropFilter: "blur(8px)", fontFamily: "'JetBrains Mono', 'Fira Code', monospace", color: "#e2e8f0" }}
       onMouseMove={handleMove}
     >
       {/* ── Atmosphere ─────────────────────────────────── */}
@@ -1239,6 +1298,7 @@ export default function ColetteCMD({ onBack }) {
                   <span className="text-[7px] font-bold text-white/30 tracking-widest uppercase font-mono select-none">AGENT MODES:</span>
                   <div className="flex flex-wrap gap-1">
                     {[
+                      { id: "odysseus", label: "ODYSSEUS" },
                       { id: "colette", label: "COLETTE" },
                       { id: "jarvis", label: "J.A.R.V.I.S" },
                       { id: "friday", label: "F.R.I.D.A.Y" },
@@ -1276,10 +1336,24 @@ export default function ColetteCMD({ onBack }) {
                     className="bg-black/80 border border-white/10 hover:border-white/20 text-white rounded px-2 py-0.5 text-[8px] font-medium outline-none cursor-pointer font-mono"
                   >
                     <option value="gemini-3.5-flash">gemini-3.5-flash (Fast)</option>
+                    <option value="gemini-2.5-pro">gemini-2.5-pro (Experimental)</option>
                     <option value="gemini-2.0-flash">gemini-2.0-flash (Flash Reasoning)</option>
                     <option value="gemini-1.5-pro">gemini-1.5-pro (High Analytical)</option>
                     <option value="gemini-1.5-flash">gemini-1.5-flash (Standard)</option>
+                    <option value="claude-3-5-sonnet">claude-3-5-sonnet (High Logic)</option>
+                    <option value="claude-3-opus">claude-3-opus (High Quality)</option>
+                    <option value="gpt-4o">gpt-4o (Omni)</option>
+                    <option value="gpt-4-turbo">gpt-4-turbo (Fast)</option>
+                    <option value="o1">o1 (Deep Reasoning)</option>
+                    <option value="o3-mini">o3-mini (High Speed)</option>
                   </select>
+                  <button
+                    onClick={() => setChatWindowOpen(true)}
+                    className="flex items-center gap-1.5 px-2.5 py-0.5 rounded uppercase font-mono text-[8px] font-bold tracking-widest transition-all hover:bg-white/10 border border-white/20"
+                    style={{ color: curTheme.textLight }}
+                  >
+                    💬 OSOBNE OKNO CZATU
+                  </button>
                 </div>
               </div>
 
@@ -1292,7 +1366,10 @@ export default function ColetteCMD({ onBack }) {
                     { id: "grounding", label: "🧠 TELEMETRIA i METRYKI (GEMINI)" },
                     { id: "sandbox", label: "💻 PIASKOWNICA KODU (CLAUDE)" },
                     { id: "secops", label: "🛡️ KONSOLA PORTÓW (HACKER_AI)" },
-                    { id: "claudeProxy", label: "🔌 PROXY CLAUDE CODE (CLI)" }
+                    { id: "claudeProxy", label: "🔌 PROXY CLAUDE CODE (CLI)" },
+                    { id: "evo", label: "🧬 EWOLUCJA i XP" },
+                    { id: "memory", label: "💾 MEMORY VAULT" },
+                    { id: "agent", label: "⚡ SUPER AGENT" }
                   ].map(tab => {
                     const isTabActive = omniActiveTab === tab.id || (omniActiveTab === "colette" && tab.id === "all");
                     return (
@@ -1560,6 +1637,17 @@ export default function ColetteCMD({ onBack }) {
                   {omniActiveTab === "claudeProxy" && (
                     <ProxyPanel curTheme={curTheme} />
                   )}
+
+                  {/* --- NEW TABS: EVO, MEMORY, AGENT --- */}
+                  {omniActiveTab === "evo" && (
+                    <EvoPanel curTheme={curTheme} />
+                  )}
+                  {omniActiveTab === "memory" && (
+                    <MemoryPanel curTheme={curTheme} />
+                  )}
+                  {omniActiveTab === "agent" && (
+                    <AgentPanel curTheme={curTheme} />
+                  )}
                 </div>
               </div>
 
@@ -1645,28 +1733,160 @@ export default function ColetteCMD({ onBack }) {
                 <div ref={bottomRef}/>
               </div>
 
+              {/* --- COLLAPSIBLE ACTIVE SUBAGENTS CONTROLLER TRAY --- */}
+              <AnimatePresence>
+                {subagentsTrayOpen && (
+                  <motion.div
+                    initial={{ height: 0, opacity: 0 }}
+                    animate={{ height: "auto", opacity: 1 }}
+                    exit={{ height: 0, opacity: 0 }}
+                    transition={{ type: "spring", stiffness: 220, damping: 25 }}
+                    className="border-t border-cyan-500/15 bg-black/60 overflow-hidden"
+                  >
+                    <div className="p-4 space-y-3">
+                      {/* Tray Header */}
+                      <div className="flex items-center justify-between pb-2 border-b border-cyan-500/10">
+                        <div className="flex items-center gap-2">
+                          <Sliders size={12} className="text-cyan-400 animate-pulse" />
+                          <span className="text-[9px] font-mono font-black tracking-widest text-cyan-400 uppercase">
+                            ACTIVE SYSTEM SUBAGENTS CONTROLLER TRAY
+                          </span>
+                        </div>
+                        <div className="text-[7.5px] font-mono text-cyan-400/50 bg-cyan-400/5 px-2 py-0.5 rounded border border-cyan-400/10">
+                          REAL-TIME FEEDBACK MODULE
+                        </div>
+                      </div>
+
+                      {/* Subagents Grid: 2 columns on desktop, 1 on mobile */}
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3 max-h-56 overflow-y-auto scrollbar-thin pr-1">
+                        {modules.map((mod) => {
+                          const Icon = mod.icon || Cpu;
+                          const isEnabled = mod.enabled !== false;
+                          
+                          return (
+                            <div
+                              key={mod.id}
+                              className="p-2.5 rounded-lg border flex items-center justify-between gap-3 transition-colors duration-200"
+                              style={{
+                                background: isEnabled ? "rgba(34,211,238,0.04)" : "rgba(15,23,42,0.15)",
+                                borderColor: isEnabled ? "rgba(34,211,238,0.15)" : "rgba(34,211,238,0.04)"
+                              }}
+                            >
+                              {/* Left part: Icon and Name info */}
+                              <div className="flex items-center gap-2.5 min-w-0">
+                                <div 
+                                  className={`w-7 h-7 rounded-md flex items-center justify-center flex-shrink-0 transition-transform ${isEnabled ? 'scale-100' : 'scale-90 opacity-40'}`}
+                                  style={{
+                                    background: isEnabled ? "rgba(34,211,238,0.1)" : "rgba(255,255,255,0.02)",
+                                    border: isEnabled ? "1px solid rgba(34,211,238,0.2)" : "1px solid transparent"
+                                  }}
+                                >
+                                  <Icon size={12} style={{ color: isEnabled ? "#22d3ee" : "rgba(255,255,255,0.2)" }} />
+                                </div>
+                                <div className="min-w-0 font-mono">
+                                  <div className="flex items-center gap-1.5">
+                                    <span style={{ fontSize: 7, color: isEnabled ? "rgba(34,211,238,0.5)" : "rgba(255,255,255,0.2)" }}>{mod.id}</span>
+                                    <span 
+                                      className={`w-1 h-1 rounded-full ${isEnabled ? 'animate-pulse bg-[#22d3ee]' : 'bg-gray-600'}`} 
+                                      style={{ boxShadow: isEnabled ? '0 0 6px #22d3ee' : 'none' }}
+                                    />
+                                  </div>
+                                  <div className="font-bold tracking-wide" style={{ fontSize: 10, color: isEnabled ? "#e2e8f0" : "rgba(255,255,255,0.3)" }}>
+                                    {mod.name}
+                                  </div>
+                                </div>
+                              </div>
+
+                              {/* Right part: Telemetry metrics and Custom Switch */}
+                              <div className="flex items-center gap-3.5 flex-shrink-0">
+                                {/* Telemetry bar/status */}
+                                {isEnabled && (
+                                  <div className="hidden sm:flex flex-col items-end gap-0.5 font-mono">
+                                    <span style={{ fontSize: 8, color: "#22d3ee" }}>L:{mod.load}%</span>
+                                    <div className="w-12 h-1 overflow-hidden rounded-full bg-cyan-950/40">
+                                      <div 
+                                        className="h-full bg-cyan-400" 
+                                        style={{ width: `${mod.load}%`, transition: "width 0.4s ease" }}
+                                      />
+                                    </div>
+                                  </div>
+                                )}
+                                
+                                <span className="text-[7px] font-mono tracking-widest font-bold hidden sm:block uppercase" style={{ color: isEnabled ? "#22d3ee" : "rgba(255,255,255,0.25)" }}>
+                                  {mod.status}
+                                </span>
+
+                                {/* Custom Cyberswitch (Holographic Cyber Toggle) */}
+                                <button
+                                  type="button"
+                                  onClick={() => toggleModule(mod.id)}
+                                  className={`relative inline-flex h-5 w-10 shrink-0 cursor-pointer rounded-full transition-colors duration-300 ease-in-out border outline-none ${
+                                    isEnabled 
+                                      ? "bg-cyan-500/25 border-cyan-400 shadow-[0_0_8px_rgba(34,211,238,0.2)]" 
+                                      : "bg-black/80 border-cyan-500/10"
+                                  }`}
+                                >
+                                  <span
+                                    className={`pointer-events-none inline-block h-3.5 w-3.5 transform rounded-full bg-white transition duration-300 ease-in-out mt-0.5 ${
+                                      isEnabled ? "translate-x-5 bg-cyan-100" : "translate-x-0.5 bg-gray-600"
+                                    }`}
+                                    style={{
+                                      boxShadow: isEnabled ? "0 0 6px #22d3ee" : "none"
+                                    }}
+                                  />
+                                </button>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  </motion.div>
+                )}
+              </AnimatePresence>
+
               {/* Input bar */}
               <div className="px-4 pb-4 pt-2" style={{ borderTop: "1px solid rgba(34,211,238,0.06)" }}>
-                <div className="flex items-center gap-2 rounded-xl px-4 py-2.5" style={{
-                  background: "rgba(34,211,238,0.03)",
-                  border: "1px solid rgba(34,211,238,0.15)",
-                  boxShadow: "0 0 20px rgba(34,211,238,0.04)",
-                }}>
-                  <ChevronRight size={12} style={{ color: "#22d3ee", flexShrink: 0 }}/>
-                  <input
-                    value={input}
-                    onChange={e => setInput(e.target.value)}
-                    onKeyDown={e => e.key === "Enter" && sendMessage()}
-                    placeholder="SYSTEM READY · AWAITING COMMAND_"
-                    className="flex-1 bg-transparent outline-none"
-                    style={{ fontSize: 11, color: "#e2e8f0", letterSpacing: 0.3 }}
-                  />
-                  <Mic size={12} style={{ color: "rgba(34,211,238,0.35)", cursor: "pointer" }}/>
-                  <RippleButton onClick={sendMessage}
-                    className="w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0"
-                    style={{ background: "rgba(34,211,238,0.12)", border: "1px solid rgba(34,211,238,0.25)" }}>
-                    <Send size={11} style={{ color: "#22d3ee" }}/>
-                  </RippleButton>
+                <div className="flex flex-col gap-2">
+                  <div className="flex items-center gap-2 rounded-xl px-4 py-2.5" style={{
+                    background: "rgba(34,211,238,0.03)",
+                    border: "1px solid rgba(34,211,238,0.15)",
+                    boxShadow: "0 0 20px rgba(34,211,238,0.04)",
+                  }}>
+                    <ChevronRight size={12} style={{ color: "#22d3ee", flexShrink: 0 }}/>
+                    <input
+                      value={input}
+                      onChange={e => setInput(e.target.value)}
+                      onKeyDown={e => e.key === "Enter" && sendMessage()}
+                      placeholder="SYSTEM READY · AWAITING COMMAND_"
+                      className="flex-1 bg-transparent outline-none"
+                      style={{ fontSize: 11, color: "#e2e8f0", letterSpacing: 0.3 }}
+                    />
+                    <Mic size={12} style={{ color: "rgba(34,211,238,0.35)", cursor: "pointer" }}/>
+                    <RippleButton onClick={sendMessage}
+                      className="w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0"
+                      style={{ background: "rgba(34,211,238,0.12)", border: "1px solid rgba(34,211,238,0.25)" }}>
+                      <Send size={11} style={{ color: "#22d3ee" }}/>
+                    </RippleButton>
+                  </div>
+
+                  {/* Toggle Subagents tray controller trigger bar */}
+                  <div className="flex items-center justify-between">
+                    <button
+                      type="button"
+                      onClick={() => setSubagentsTrayOpen(prev => !prev)}
+                      className={`flex items-center gap-1.5 px-3 py-1 rounded border text-[8px] font-mono font-bold tracking-widest cursor-pointer transition-all duration-300 outline-none ${
+                        subagentsTrayOpen 
+                          ? "border-[#22d3ee] bg-[#22d3ee]/20 text-[#22d3ee] shadow-[0_0_10px_rgba(34,211,238,0.2)]" 
+                          : "border-cyan-500/15 bg-cyan-500/5 text-cyan-400/80 hover:bg-cyan-500/12 hover:text-cyan-400"
+                      }`}
+                    >
+                      🤖 {subagentsTrayOpen ? "CLOSE CONTROLS" : "SUBACTIVE MODULES CONTROLLER TRAY"} ({modules.filter(m => m.enabled !== false).length}/{modules.length} ONLINE)
+                    </button>
+                    <span className="text-[7.5px] text-[#22d3ee]/35 tracking-wider font-mono uppercase">
+                      Colette ADK Layered Subagents Sandbox
+                    </span>
+                  </div>
                 </div>
               </div>
             </GlassPanel>
@@ -1739,10 +1959,11 @@ export default function ColetteCMD({ onBack }) {
               <div className="flex-1 overflow-auto px-3 py-2 space-y-1.5">
                 <AnimatePresence>
                   {modules.map((mod) => {
-                    const Icon = mod.icon;
-                    const isActive = mod.status !== "idle" && mod.status !== "empty";
+                    const Icon = mod.icon || Cpu;
+                    const isEnabled = mod.enabled !== false;
+                    const isActive = isEnabled && mod.status !== "idle" && mod.status !== "empty" && mod.status !== "offline";
                     const isExpanded = expandedMod === mod.id;
-                    const isCriticalAction = ["scanning", "purging", "critical", "compiling", "checking", "re-routing"].includes(mod.status);
+                    const isCriticalAction = isEnabled && ["scanning", "purging", "critical", "compiling", "checking", "re-routing"].includes(mod.status);
                     return (
                       <motion.div key={mod.id}
                         layoutId={`mod-${mod.id}`}
@@ -2139,6 +2360,100 @@ export default function ColetteCMD({ onBack }) {
             {/* Drawer Footer info */}
             <div className="p-4 bg-cyan-950/25 border-t border-cyan-500/10 text-center text-[8px] text-cyan-400/30 tracking-widest">
               NEXUS DE-SIMULATOR ACTIVE
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* FULL CHAT WINDOW MODAL */}
+      <AnimatePresence>
+        {chatWindowOpen && (
+          <motion.div
+            initial={{ opacity: 0, scale: 0.95 }}
+            animate={{ opacity: 1, scale: 1 }}
+            exit={{ opacity: 0, scale: 0.95 }}
+            className="fixed inset-4 z-50 rounded-xl overflow-hidden shadow-2xl flex flex-col bg-black/95 border backdrop-blur-xl"
+            style={{ borderColor: curTheme.primary }}
+          >
+            {/* Header */}
+            <div className="flex items-center justify-between p-3 border-b bg-white/5" style={{ borderColor: curTheme.border }}>
+              <div className="flex items-center gap-3">
+                <div className="w-8 h-8 rounded flex items-center justify-center font-bold" style={{ backgroundColor: curTheme.primary, color: "black" }}>
+                  {selectedAgent.substring(0,2).toUpperCase()}
+                </div>
+                <div>
+                  <div className="font-bold text-[10px] uppercase tracking-widest" style={{ color: curTheme.primary }}>{curTheme.title}</div>
+                  <div className="text-[8px] opacity-60 font-mono tracking-widest" style={{ color: curTheme.textLight }}>FULL CHAT INTERFACE</div>
+                </div>
+              </div>
+              <div className="flex items-center gap-3">
+                <select
+                  value={fullChatModel}
+                  onChange={(e) => setFullChatModel(e.target.value)}
+                  className="bg-black/60 border rounded px-3 py-1 font-mono text-[9px] outline-none hover:brightness-125 transition-all text-white/90"
+                  style={{ borderColor: curTheme.border }}
+                >
+                  <option value="gemini-3.5-flash">gemini-3.5-flash (Fast)</option>
+                  <option value="gemini-2.5-pro">gemini-2.5-pro (Experimental)</option>
+                  <option value="gemini-2.0-flash">gemini-2.0-flash (Flash Reasoning)</option>
+                  <option value="gemini-1.5-pro">gemini-1.5-pro (High Analytical)</option>
+                  <option value="gemini-1.5-flash">gemini-1.5-flash (Standard)</option>
+                  <option value="claude-3-5-sonnet">claude-3-5-sonnet (High Logic)</option>
+                  <option value="claude-3-opus">claude-3-opus (High Quality)</option>
+                  <option value="gpt-4o">gpt-4o (Omni)</option>
+                  <option value="gpt-4-turbo">gpt-4-turbo (Fast)</option>
+                  <option value="o1">o1 (Deep Reasoning)</option>
+                  <option value="o3-mini">o3-mini (High Speed)</option>
+                </select>
+                <button
+                  onClick={() => setChatWindowOpen(false)}
+                  className="p-1 rounded bg-red-500/10 hover:bg-red-500/30 text-red-400 transition-colors"
+                >
+                  <X size={16} />
+                </button>
+              </div>
+            </div>
+
+            {/* Chat Stream */}
+            <div className="flex-1 overflow-auto p-6 space-y-4 font-mono text-[11px] leading-relaxed scrollbar-thin">
+              {messages.map(msg => (
+                <motion.div key={msg.id}
+                  initial={{ opacity: 0, y: 10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
+                >
+                  <div className={`p-4 rounded-xl max-w-[80%] ${msg.role === 'user' ? 'bg-white/10 text-white' : 'bg-black/40 border'}`}
+                    style={msg.role !== 'user' ? { borderColor: curTheme.border, color: curTheme.textLight } : {}}>
+                    {msg.text}
+                  </div>
+                </motion.div>
+              ))}
+            </div>
+
+            {/* Input */}
+            <div className="p-4 border-t bg-black/40" style={{ borderColor: curTheme.border }}>
+               <div className="flex items-center gap-2 rounded-xl px-4 py-3" style={{
+                 background: "rgba(255,255,255,0.03)",
+                 border: `1px solid ${curTheme.border}`,
+               }}>
+                 <ChevronRight size={14} style={{ color: curTheme.primary }}/>
+                 <input
+                   value={input}
+                   onChange={e => setInput(e.target.value)}
+                   onKeyDown={e => {
+                     if(e.key === "Enter") {
+                       sendMessage();
+                     }
+                   }}
+                   placeholder={`SEND MESSAGE TO ${selectedAgent.toUpperCase()} [${fullChatModel}]...`}
+                   className="flex-1 bg-transparent text-[11px] outline-none text-white font-mono tracking-widest"
+                 />
+                 <RippleButton onClick={sendMessage}
+                   className="w-10 h-10 rounded-lg flex items-center justify-center font-bold transition-all hover:brightness-125"
+                   style={{ background: curTheme.border, color: curTheme.primary }}>
+                   <Send size={14} />
+                 </RippleButton>
+               </div>
             </div>
           </motion.div>
         )}
